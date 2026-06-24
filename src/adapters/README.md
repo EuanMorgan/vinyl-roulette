@@ -40,7 +40,7 @@ pricing.setDriftedPrice("https://amazon/y", 2900); // price drifted +£4 over qu
 | Interface         | Real implementation             | Status                         |
 | ----------------- | ------------------------------- | ------------------------------ |
 | `DiscogsAdapter`  | `HttpDiscogsAdapter` (`discogs.ts`) | Shipped (issue #3)         |
-| `PricingAdapter`  | —                               | Later slice (issue #6)         |
+| `PricingAdapter`  | `HttpPricingAdapter` (`pricing.ts`) | Shipped (issue #6)         |
 | `BuyAdapter`      | —                               | Later slice (issue #7 / #9)    |
 
 ### Discogs (`HttpDiscogsAdapter`)
@@ -62,5 +62,30 @@ release/instance ids, genres, styles).
   sync-service tests. `HttpDiscogsAdapter`'s own pagination/rate-limit logic is tested
   separately with an injected `fetch` + `sleep` (`discogs.test.ts`) — still no live calls.
 
-The remaining `PricingAdapter` and `BuyAdapter` implementations land in their own later
-slices. This convention keeps every external dependency behind a thin, fakeable seam.
+### Cross-source pricing (`HttpPricingAdapter`)
+
+Looks a chosen record up on **both** Discogs Marketplace and Amazon and reports **landed cost**
+(item + shipping, GBP) per source, so the picker buys from the cheaper landed cost (price is a
+_source-selector_, never a record-selector — CONTEXT.md). Shape: a composite over per-source
+`PriceSource`s.
+
+- **Composite (`HttpPricingAdapter`).** Fans `lookup` across every source and returns each
+  source's cheapest available listing; a source that throws is skipped so one being down never
+  hides the other. `revalidate` is routed to whichever source owns the listing URL, and a thrown
+  re-check becomes `null` so the order lifecycle marks it STALE rather than buying blind.
+- **Discogs (`DiscogsMarketplaceSource`).** `lookup` resolves the release via the official
+  search API, then parses the public marketplace **sell page** for the cheapest listing (item +
+  per-seller shipping + condition) — Discogs has no API that enumerates a release's listings.
+  `revalidate` uses the robust official **single-listing** endpoint (`/marketplace/listings/{id}`),
+  treating 404/sold as gone.
+- **Amazon (`AmazonSource`).** No free product API, so both calls parse HTML (search → first
+  ASIN + GBP price; product → price + in-stock). Repressings ship Prime/free → landed == item.
+- **Brittleness is contained.** The HTML parsers (`parseDiscogsSellPage`, `parseAmazonSearch`,
+  `parseAmazonProduct`) are small pure functions tested against fixtures; a markup change is a
+  localized fix. Transport is an injected `fetch`, so it can later be swapped for a
+  Playwright-backed fetch (ADR-0003's real Chrome) without touching parsing or the picker.
+- **Config.** `DISCOGS_TOKEN` (optional — lifts search rate limits) + `AMAZON_BASE_URL` (locale).
+  Build with `pricingAdapterFromEnv()`; both sources have public defaults so it never returns null.
+
+The remaining `BuyAdapter` implementation lands in its own later slice. This convention keeps
+every external dependency behind a thin, fakeable seam.

@@ -8,9 +8,10 @@
  * Quote (a quote, not a held cart — ADR-0003). It is pure-ish: all music/network reasoning
  * is behind the injected Brain + pricing adapters, so it's exercised with fakes in tests.
  *
- * The real Brain (Claude in-context) and real cross-source pricing (#6) are separate slices.
- * Until then `main()` runs with placeholder adapters behind `VINYL_DEMO=1` so a developer can
- * see an end-to-end PROPOSED Quote in the UI without fabricating picks on the default path.
+ * Real cross-source pricing (#6) now ships as `HttpPricingAdapter` (`pricingAdapterFromEnv`);
+ * the real Brain (Claude in-context) is still a separate slice. Until the Brain lands, `main()`
+ * runs with placeholder adapters behind `VINYL_DEMO=1` so a developer can see an end-to-end
+ * PROPOSED Quote in the UI without fabricating picks on the default path.
  *
  * Usage: `npm run agent:run [-- --trigger scheduled]`  (set VINYL_DEMO=1 for a demo pick)
  */
@@ -189,13 +190,13 @@ async function main(): Promise<void> {
     const store = new Store(db);
 
     if (process.env.VINYL_DEMO !== "1") {
-      // Default path: the real Brain (Claude in-context) and real pricing (#6) aren't wired
-      // yet. Record the Run honestly rather than fabricating a pick.
+      // Default path: real pricing (#6) ships, but the real Brain (Claude in-context) isn't
+      // wired yet, so there's nothing to price. Record the Run honestly rather than fabricating.
       const run = store.runs.create(trigger);
       store.runs.finish(
         run.id,
         "finished",
-        "Brain + pricing not yet wired (real Brain + #6). Re-run with VINYL_DEMO=1 for a demo pick.",
+        "Real Brain not yet wired (pricing #6 shipped). Re-run with VINYL_DEMO=1 for a demo pick.",
       );
       console.log(`Run #${run.id} (${trigger}) recorded — set VINYL_DEMO=1 to see a demo PROPOSED quote.`);
       return;

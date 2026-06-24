@@ -41,6 +41,19 @@ export interface PriceListing {
   landedPricePence: number;
   available: boolean;
   discogsReleaseId?: number;
+  /**
+   * Shipping component of the landed cost, in pence (GBP), when the source breaks it out.
+   * Captured for transparency (the ledger/Reveal can show item + shipping); the picker only
+   * compares `landedPricePence`. Discogs reports per-seller shipping; Amazon is usually
+   * Prime/free (0) so this stays absent or 0.
+   */
+  shippingPence?: number;
+  /**
+   * Condition grade where the source provides one (Discogs Marketplace is condition-graded,
+   * e.g. "Near Mint (NM or M-)"). Amazon new repressings have none. Captured per the #6
+   * acceptance criterion ("availability/condition data captured where the source provides it").
+   */
+  condition?: string;
 }
 
 /**
