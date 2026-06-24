@@ -125,6 +125,35 @@ export const DEFAULT_CONFIG: Config = {
   paused: false,
 };
 
+/**
+ * The picker-facing taste signal: one owned album annotated with its rating and notes.
+ * `rating` is null when the album is owned but unrated — under "ownership is not
+ * endorsement" that is the *absence* of a positive signal, never a neutral/low one, so
+ * the picker can tell loved (high rating) from tolerated (low) from no-signal (null).
+ * `genres`/`styles` are parsed (the raw store rows keep them JSON-encoded).
+ */
+export interface TasteRow {
+  album_key: string;
+  artist: string;
+  title: string;
+  year: number | null;
+  genres: string[];
+  styles: string[];
+  rating: number | null;
+  notes: string[];
+}
+
+/** Parse a JSON-encoded string array (genres/styles), tolerating null/garbage. */
+export function parseTags(json: string | null): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Normalize artist + title into the album-level dupe-avoidance key. */
 export function albumKey(artist: string, title: string): string {
   const norm = (s: string) =>

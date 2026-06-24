@@ -1,27 +1,18 @@
 import { getStore } from "@/lib/store-instance";
 import { formatGBP } from "@/store/money";
+import type { TasteRow } from "@/store/types";
+import { addNoteAction, clearRatingAction, setRatingAction } from "./actions";
 
 // The spine changes outside the request lifecycle (the agent writes to it), so never
 // cache this page — always read the live file.
 export const dynamic = "force-dynamic";
-
-/** genres/styles are stored as JSON-encoded arrays; tolerate null/garbage on read. */
-function parseTags(json: string | null): string[] {
-  if (!json) return [];
-  try {
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
 
 export default function Home() {
   const store = getStore();
   const runs = store.runs.list(10);
   const config = store.config.get();
   const balancePence = store.ledger.balance();
-  const collection = store.collection.all();
+  const collection = store.collection.withTaste();
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-12">
@@ -88,38 +79,122 @@ export default function Home() {
           </p>
         ) : (
           <ul className="space-y-2">
-            {collection.map((row) => {
-              const tags = [...parseTags(row.genres), ...parseTags(row.styles)];
-              return (
-                <li
-                  key={row.id}
-                  className="rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-3"
-                >
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="font-medium">
-                      {row.artist} <span className="text-neutral-500">—</span> {row.title}
-                    </span>
-                    {row.year && <span className="text-xs text-neutral-600">{row.year}</span>}
-                  </div>
-                  {tags.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {tags.map((tag) => (
-                        <span
-                          key={tag}
-                          className="rounded-full border border-neutral-800 px-2 py-0.5 text-xs text-neutral-400"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </li>
-              );
-            })}
+            {collection.map((row) => (
+              <CollectionItem key={row.album_key} row={row} />
+            ))}
           </ul>
         )}
       </section>
     </main>
+  );
+}
+
+/**
+ * One collection album with its taste controls. Rating and notes apply to any record
+ * (not just purchased ones) — the "ownership is not endorsement" feedback loop. The
+ * forms post directly to server actions, so this works without client-side JS.
+ */
+function CollectionItem({ row }: { row: TasteRow }) {
+  const tags = [...row.genres, ...row.styles];
+  const hidden = (
+    <>
+      <input type="hidden" name="album_key" value={row.album_key} />
+      <input type="hidden" name="artist" value={row.artist} />
+      <input type="hidden" name="title" value={row.title} />
+    </>
+  );
+
+  return (
+    <li className="rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="font-medium">
+          {row.artist} <span className="text-neutral-500">—</span> {row.title}
+        </span>
+        {row.year && <span className="text-xs text-neutral-600">{row.year}</span>}
+      </div>
+
+      {tags.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {tags.map((tag) => (
+            <span
+              key={tag}
+              className="rounded-full border border-neutral-800 px-2 py-0.5 text-xs text-neutral-400"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Rating: each star is a submit button posting its value. An unrated record shows
+          empty stars — owning it says nothing about whether Euan loves it. A rated record
+          can be cleared back to no-signal (null), never silently coerced to a low score. */}
+      <div className="mt-3 flex items-center gap-2">
+        <form action={setRatingAction} className="flex items-center gap-2">
+          {hidden}
+          <div className="flex gap-0.5">
+            {[1, 2, 3, 4, 5].map((n) => {
+              const filled = row.rating !== null && n <= row.rating;
+              return (
+                <button
+                  key={n}
+                  type="submit"
+                  name="rating"
+                  value={n}
+                  aria-label={`Rate ${n} of 5`}
+                  aria-pressed={row.rating === n}
+                  className={`text-lg leading-none transition-colors ${
+                    filled ? "text-amber-400" : "text-neutral-700 hover:text-neutral-500"
+                  }`}
+                >
+                  ★
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-xs text-neutral-600">
+            {row.rating !== null ? `${row.rating}/5` : "unrated"}
+          </span>
+        </form>
+        {row.rating !== null && (
+          <form action={clearRatingAction}>
+            <input type="hidden" name="album_key" value={row.album_key} />
+            <button
+              type="submit"
+              className="text-xs text-neutral-600 underline-offset-2 hover:text-neutral-400 hover:underline"
+            >
+              clear
+            </button>
+          </form>
+        )}
+      </div>
+
+      {row.notes.length > 0 && (
+        <ul className="mt-3 space-y-1 border-l border-neutral-800 pl-3">
+          {row.notes.map((note, i) => (
+            <li key={i} className="text-sm text-neutral-300">
+              {note}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <form action={addNoteAction} className="mt-3 flex gap-2">
+        {hidden}
+        <input
+          type="text"
+          name="body"
+          placeholder="Add a note…"
+          className="flex-1 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-200 placeholder:text-neutral-600 focus:border-neutral-600 focus:outline-none"
+        />
+        <button
+          type="submit"
+          className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800"
+        >
+          Add
+        </button>
+      </form>
+    </li>
   );
 }
 
