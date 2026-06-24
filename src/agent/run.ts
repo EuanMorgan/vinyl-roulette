@@ -28,8 +28,9 @@ import { notificationAdapterFromEnv } from "@/adapters/notify";
 import { openDb, resolveDbPath } from "@/store/db";
 import { Store } from "@/store/store";
 import { formatGBP } from "@/store/money";
-import { albumKey, type ChaosDial, type OrderRow, type RunTrigger } from "@/store/types";
-import { pickRecord } from "./picker";
+import { albumKey, type ChaosDial, type Config, type OrderRow, type RunRow, type RunTrigger } from "@/store/types";
+import { mulberry32, pickRecord } from "./picker";
+import { pickSplurge } from "./splurge";
 
 function parseTrigger(argv: string[]): RunTrigger {
   const i = argv.indexOf("--trigger");
@@ -97,7 +98,11 @@ export interface GapFillOutcome {
   rejected: number;
 }
 
-/** Run the default Gap-fill pick. Returns null without running if buying is Paused. */
+/**
+ * Run the default Gap-fill pick on its own fresh Run. Returns null without running if Paused.
+ * This is the entry the STALE re-pick (lifecycle.ts) calls — it deliberately does *not* accrue
+ * the monthly cap (a re-pick must never mint another month's funds); `runMonthly` owns accrual.
+ */
 export async function runGapFill(
   store: Store,
   deps: GapFillDeps,
@@ -107,10 +112,23 @@ export async function runGapFill(
     console.log("Paused — skipping Run (no future buying while paused).");
     return null;
   }
-
   const config = store.config.get();
   const run = store.runs.create(trigger);
+  return proposeGapFillOnRun(store, deps, run, config);
+}
 
+/**
+ * The Gap-fill body, operating on an *already-created* Run — so `runMonthly` can accrue the
+ * cap and decide Splurge-vs-Gap-fill against one Run, and `runGapFill` can drive a fresh one.
+ * Calls the pure `pickRecord`, logs the "wanted but couldn't land" records to Rejected, and
+ * parks the winner as a PROPOSED Quote (a quote, not a held cart — ADR-0003).
+ */
+async function proposeGapFillOnRun(
+  store: Store,
+  deps: GapFillDeps,
+  run: RunRow,
+  config: Config,
+): Promise<GapFillOutcome> {
   const result = await pickRecord({
     brain: deps.brain,
     pricing: deps.pricing,
@@ -167,24 +185,132 @@ export async function runGapFill(
     "finished",
     `Proposed a ${q.lane} pick from ${q.source} at ${formatGBP(q.landedPricePence)} — pending approval.`,
   );
-  // Pull Euan in for the irreducible payment step. Title-hiding by design: the notifier only
-  // ever sees price + source. A notification failure must not undo a parked Quote, so the
-  // adapter swallows its own errors (see notify.ts).
-  if (deps.notifier) {
-    try {
-      await deps.notifier.proposed({
-        orderId: order.id,
-        source: order.source,
-        pricePence: order.quoted_price_pence,
+  await notifyProposed(deps, order);
+  return { runId: run.id, order, rejected: result.rejected.length };
+}
+
+/**
+ * Pull Euan in for the irreducible payment step. Title-hiding by design: the notifier only ever
+ * sees price + source. A notification failure must never undo a parked Quote — the built-in
+ * adapters swallow their own errors (see notify.ts); this guards a custom one that throws too.
+ */
+async function notifyProposed(deps: GapFillDeps, order: OrderRow): Promise<void> {
+  if (!deps.notifier) return;
+  try {
+    await deps.notifier.proposed({
+      orderId: order.id,
+      source: order.source,
+      pricePence: order.quoted_price_pence,
+    });
+  } catch (err) {
+    console.warn("[run] proposed-order notification failed:", err);
+  }
+}
+
+/** The buy intent a Run settled on, surfaced to callers/tests (the *what*, not the chaos). */
+export type RunIntent = "gap_fill" | "splurge";
+
+export interface MonthlyOutcome {
+  runId: number;
+  intent: RunIntent;
+  /** The PROPOSED Quote, when one was landed within budget. */
+  order?: OrderRow;
+  /** How many records went to the Rejected log this Run (Gap-fill path only). */
+  rejected: number;
+}
+
+/**
+ * The monthly Run orchestrator (issue #8) — the single entrypoint the scheduler/"Run now" drive.
+ * It owns the money model around the pick:
+ *   1. short-circuit if Paused (no Run row, no accrual);
+ *   2. accrue the monthly cap into the war chest (idempotent per Run; carry-over is automatic);
+ *   3. *occasionally* Splurge — but only when the chest can clear a Rejected-log item under the
+ *      ceiling (CONTEXT.md → Buy intent). The "occasionally" is the seeded `splurgeChancePercent`
+ *      roll; the affordability gate is the hard rule. A landed Splurge clears its record off the
+ *      Rejected log so the thing once unaffordable finally arrives;
+ *   4. otherwise fall through to the default Gap-fill pick on the same Run.
+ */
+export async function runMonthly(
+  store: Store,
+  deps: GapFillDeps,
+  trigger: RunTrigger,
+): Promise<MonthlyOutcome | null> {
+  if (store.config.isPaused()) {
+    console.log("Paused — skipping Run (no future buying while paused).");
+    return null;
+  }
+
+  const config = store.config.get();
+  const run = store.runs.create(trigger);
+  store.ledger.accrueCap(run.id, config.monthlyCapPence);
+
+  const balancePence = store.ledger.balance();
+  const ceilingPence = config.perPurchaseCeilingPence;
+  const ownedKeys = new Set(store.owned.keys());
+
+  // Splurge competes for the slot only when the chest can clear a wishlist item under the
+  // ceiling — and even then only on the occasional seeded roll, so it stays a treat.
+  if (shouldAttemptSplurge(deps.seed, config.splurgeChancePercent)) {
+    const wishlist = store.rejected
+      .splurgeWishlist()
+      .filter((c) => !ownedKeys.has(c.album_key))
+      .map((c) => ({
+        album_key: c.album_key,
+        artist: c.artist,
+        title: c.title,
+        lane: c.lane,
+        quotedPricePence: c.quoted_price_pence,
+      }));
+    if (wishlist.length > 0) {
+      const splurge = await pickSplurge({
+        pricing: deps.pricing,
+        candidates: wishlist,
+        ownedKeys,
+        budget: { balancePence, ceilingPence },
       });
-    } catch (err) {
-      // The Quote is already safely PROPOSED and the Run has finished; a notifier that throws
-      // must not fail the Run or make a caller retry. The built-in adapters swallow their own
-      // errors (see notify.ts) — this guards a custom/misbehaving NotificationAdapter too.
-      console.warn("[run] proposed-order notification failed:", err);
+      if (splurge.ok) {
+        const q = splurge.quote;
+        const order = store.orders.propose({
+          run_id: run.id,
+          album_key: q.album_key,
+          artist: q.artist,
+          title: q.title,
+          lane: q.lane ?? null,
+          intent: "splurge",
+          why: "A war-chest Splurge — finally clearing a record the chest couldn't reach before.",
+          source: q.source,
+          listing_url: q.listingUrl,
+          quoted_price_pence: q.landedPricePence,
+          discogs_release_id: q.discogsReleaseId ?? null,
+        });
+        // It's now a live order, not a reject: clear it off the Rejected log / Splurge wishlist.
+        // (A later STALE/Decline re-adds it, so this can't strand the record.)
+        store.rejected.clearAlbum(q.album_key);
+        store.runs.finish(
+          run.id,
+          "finished",
+          `Proposed a Splurge from ${q.source} at ${formatGBP(q.landedPricePence)} — pending approval.`,
+        );
+        await notifyProposed(deps, order);
+        return { runId: run.id, intent: "splurge", order, rejected: 0 };
+      }
     }
   }
-  return { runId: run.id, order, rejected: result.rejected.length };
+
+  const gap = await proposeGapFillOnRun(store, deps, run, config);
+  return { runId: run.id, intent: "gap_fill", order: gap.order, rejected: gap.rejected };
+}
+
+/**
+ * The occasional-Splurge roll: deterministic off the Run's injected seed, so tests fix it.
+ * The seed is XORed with a constant before seeding the PRNG so this draw is its own stream,
+ * decorrelated from any other seeded draw in the Run (e.g. the picker's lane ordering).
+ */
+function shouldAttemptSplurge(seed: number, chancePercent: number): boolean {
+  if (chancePercent <= 0) return false;
+  if (chancePercent >= 100) return true;
+  const rng = mulberry32((seed ^ 0x53504c47) >>> 0); // 0x53504c47 = "SPLG"
+  return rng() * 100 < chancePercent;
 }
 
 /**
@@ -232,15 +358,8 @@ async function main(): Promise<void> {
       return;
     }
 
-    // Demo: give the war chest something to spend if it's empty, then make a real pick.
-    if (store.ledger.balance() <= 0) {
-      store.ledger.append({
-        entry_type: "cap_added",
-        amount_pence: store.config.get().monthlyCapPence,
-        note: "demo: seed war chest so the demo pick is affordable",
-      });
-    }
-    const outcome = await runGapFill(store, demoDeps(), trigger);
+    // runMonthly accrues the monthly cap itself, so the war chest funds the demo pick.
+    const outcome = await runMonthly(store, demoDeps(), trigger);
     if (outcome?.order) {
       console.log(
         `Run #${outcome.runId}: PROPOSED a pick from ${outcome.order.source} at ` +

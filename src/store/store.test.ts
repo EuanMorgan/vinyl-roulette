@@ -193,6 +193,33 @@ describe("Store", () => {
       expect(t.store.rejected.hasAlbum(key)).toBe(true);
       expect(t.store.rejected.all()[0]?.reason).toBe("over_budget");
     });
+
+    it("derives a priciest-first Splurge wishlist, one row per album with a price", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+      const cheap = albumKey("Wings", "Band on the Run");
+      const pricey = albumKey("John Coltrane", "A Love Supreme");
+      t.store.rejected.add({ album_key: cheap, artist: "Wings", title: "Band on the Run", reason: "over_budget", quoted_price_pence: 2500 });
+      // Same album rejected twice; the wishlist collapses to one row at the higher quote.
+      t.store.rejected.add({ album_key: pricey, artist: "John Coltrane", title: "A Love Supreme", reason: "over_budget", quoted_price_pence: 4500 });
+      t.store.rejected.add({ album_key: pricey, artist: "John Coltrane", title: "A Love Supreme", reason: "over_budget", quoted_price_pence: 5200 });
+      // No price → can't be sized against the chest → excluded from the wishlist.
+      t.store.rejected.add({ album_key: albumKey("Lost", "Sold Out"), artist: "Lost", title: "Sold Out", reason: "out_of_stock" });
+
+      const wishlist = t.store.rejected.splurgeWishlist();
+      expect(wishlist.map((w) => w.title)).toEqual(["A Love Supreme", "Band on the Run"]);
+      expect(wishlist[0]?.quoted_price_pence).toBe(5200);
+    });
+
+    it("clears every Rejected-log row for an album when a Splurge lands it", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+      const key = albumKey("John Coltrane", "A Love Supreme");
+      t.store.rejected.add({ album_key: key, artist: "John Coltrane", title: "A Love Supreme", reason: "over_budget", quoted_price_pence: 4500 });
+      t.store.rejected.add({ album_key: key, artist: "John Coltrane", title: "A Love Supreme", reason: "over_budget", quoted_price_pence: 5200 });
+      expect(t.store.rejected.clearAlbum(key)).toBe(2);
+      expect(t.store.rejected.hasAlbum(key)).toBe(false);
+    });
   });
 
   describe("orders (lifecycle)", () => {
@@ -298,6 +325,52 @@ describe("Store", () => {
       const spend = t.store.ledger.append({ entry_type: "order_placed", amount_pence: -2200 });
       expect(spend.balance_after_pence).toBe(3800);
       expect(t.store.ledger.balance()).toBe(3800);
+    });
+
+    it("accrues the monthly cap once per Run, carrying over unspent funds", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+      const run1 = t.store.runs.create("scheduled");
+      const run2 = t.store.runs.create("scheduled");
+
+      const first = t.store.ledger.accrueCap(run1.id, 3000);
+      expect(first?.balance_after_pence).toBe(3000);
+      // Idempotent: a second accrual for the same Run is a no-op, never inflating the chest.
+      expect(t.store.ledger.accrueCap(run1.id, 3000)).toBeNull();
+      expect(t.store.ledger.balance()).toBe(3000);
+
+      // A fresh Run accrues again; the previous month's unspent £30 carries over to £60.
+      const second = t.store.ledger.accrueCap(run2.id, 3000);
+      expect(second?.balance_after_pence).toBe(6000);
+    });
+
+    it("activity merges money movements with quote/approval/order lifecycle events", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+      const run = t.store.runs.create("scheduled");
+      t.store.ledger.accrueCap(run.id, 3000); // cap_added (a money event)
+      const order = t.store.orders.propose({
+        album_key: albumKey("The Beatles", "Let It Be"),
+        artist: "The Beatles",
+        title: "Let It Be",
+        intent: "gap_fill",
+        source: "discogs",
+        listing_url: "https://d/letitbe",
+        quoted_price_pence: 2000,
+      });
+      t.store.orders.setStatus(order.id, "APPROVED");
+      t.store.orders.setStatus(order.id, "ORDERED", { final_price_pence: 2000 });
+      t.store.ledger.append({ entry_type: "order_placed", amount_pence: -2000, order_id: order.id });
+
+      const kinds = t.store.ledger.activity().map((e) => e.kind);
+      // Every quote, approval, and order (the spend) is surfaced, alongside the cap accrual.
+      expect(kinds).toContain("quote");
+      expect(kinds).toContain("approved");
+      expect(kinds).toContain("cap_added");
+      expect(kinds).toContain("order_placed");
+      // Money events carry the running balance; lifecycle events carry the source, not the title.
+      const capEvent = t.store.ledger.activity().find((e) => e.kind === "cap_added");
+      expect(capEvent?.balanceAfterPence).toBe(3000);
     });
   });
 

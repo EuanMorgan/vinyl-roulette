@@ -117,7 +117,9 @@ export async function pickRecord(input: PickerInput): Promise<PickResult> {
   return { ok: false, reason: "nothing_affordable", rejected };
 }
 
-function cheapestAvailable(listings: PriceListing[]): PriceListing | undefined {
+/** The cheapest *available* listing by landed cost, or undefined if none are buyable. Shared
+ *  with the Splurge picker — price is a source-selector across both buy intents. */
+export function cheapestAvailable(listings: PriceListing[]): PriceListing | undefined {
   return listings
     .filter((l) => l.available)
     .reduce<PriceListing | undefined>(
@@ -194,8 +196,9 @@ function weightedPick(lanes: { lane: Lane; weight: number }[], rng: () => number
   return lanes[lanes.length - 1]!.lane;
 }
 
-/** Small, fast, fully deterministic PRNG (mulberry32). Same seed → same sequence. */
-function mulberry32(seed: number): () => number {
+/** Small, fast, fully deterministic PRNG (mulberry32). Same seed → same sequence.
+ *  Exported so the Splurge-vs-Gap-fill roll (run.ts) draws from the same seeded family. */
+export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) | 0;

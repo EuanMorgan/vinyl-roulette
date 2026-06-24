@@ -1,6 +1,6 @@
 import { getStore } from "@/lib/store-instance";
 import { formatGBP } from "@/store/money";
-import type { TasteRow } from "@/store/types";
+import type { LedgerActivityEvent, TasteRow } from "@/store/types";
 import { addNoteAction, clearRatingAction, setRatingAction } from "./actions";
 
 // The spine changes outside the request lifecycle (the agent writes to it), so never
@@ -14,6 +14,7 @@ export default function Home() {
   const balancePence = store.ledger.balance();
   const collection = store.collection.withTaste();
   const proposed = store.orders.listByStatus("PROPOSED");
+  const activity = store.ledger.activity(50);
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-12">
@@ -91,6 +92,30 @@ export default function Home() {
                 )}
                 <p className="mt-1 text-xs text-neutral-600">{run.started_at}</p>
               </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="mt-8">
+        <h2 className="mb-3 flex items-baseline justify-between text-sm font-medium uppercase tracking-wide text-neutral-400">
+          <span>Spend ledger</span>
+          <span className="text-xs font-normal normal-case text-neutral-600">
+            running balance {formatGBP(balancePence)}
+          </span>
+        </h2>
+        {/* The always-on transparency backstop (CONTEXT.md → Spend ledger): every quote,
+            approval, and order, plus every funds movement with the war-chest balance after it.
+            The money is fully transparent; only the music is a secret. */}
+        {activity.length === 0 ? (
+          <p className="rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-6 text-sm text-neutral-400">
+            No entries yet. The monthly cap is accrued into the war chest on each Run, and every
+            quote, approval, and order is recorded here.
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {activity.map((event, i) => (
+              <LedgerActivityItem key={`${event.kind}-${event.orderId ?? "x"}-${i}`} event={event} />
             ))}
           </ul>
         )}
@@ -227,6 +252,48 @@ function CollectionItem({ row }: { row: TasteRow }) {
           Add
         </button>
       </form>
+    </li>
+  );
+}
+
+/** One spend-ledger row. Money events (cap/order/refund/adjustment) show a signed amount + the
+ *  war-chest balance after them; lifecycle events (quote/approval/arrival) show the source. The
+ *  label keeps the surprise — it names the *kind* and source, never the record title. */
+function LedgerActivityItem({ event }: { event: LedgerActivityEvent }) {
+  const labels: Record<LedgerActivityEvent["kind"], string> = {
+    cap_added: "Monthly cap added",
+    order_placed: "Order placed",
+    refund: "Refund",
+    adjustment: "Adjustment",
+    quote: "Quote parked — pending approval",
+    approved: "Approved",
+    arrived: "Arrived",
+  };
+  const hasAmount = event.amountPence !== undefined;
+  const credit = (event.amountPence ?? 0) >= 0;
+  return (
+    <li className="flex items-baseline justify-between gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-2.5 text-sm">
+      <div className="min-w-0">
+        <span className="text-neutral-200">{labels[event.kind]}</span>
+        {event.source && (
+          <span className="ml-2 text-xs capitalize text-neutral-500">{event.source}</span>
+        )}
+        {event.note && <span className="ml-2 text-xs text-neutral-500">{event.note}</span>}
+        <div className="text-xs text-neutral-600">{event.at}</div>
+      </div>
+      {hasAmount && (
+        <div className="shrink-0 text-right">
+          <div className={credit ? "font-medium text-emerald-400" : "font-medium text-neutral-300"}>
+            {credit ? "+" : "−"}
+            {formatGBP(Math.abs(event.amountPence!))}
+          </div>
+          {event.balanceAfterPence !== undefined && (
+            <div className="text-xs text-neutral-600">
+              balance {formatGBP(event.balanceAfterPence)}
+            </div>
+          )}
+        </div>
+      )}
     </li>
   );
 }
