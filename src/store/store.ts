@@ -18,6 +18,8 @@ import {
   type Lane,
   type Source,
   type BuyIntent,
+  type TasteRow,
+  parseTags,
 } from "./types";
 
 /** Injectable clock so tests get deterministic timestamps. */
@@ -110,6 +112,47 @@ export class Store {
     },
     all: (): CollectionRow[] =>
       this.db.prepare("SELECT * FROM collection ORDER BY artist, title").all() as CollectionRow[],
+    /**
+     * The taste signal the picker reads: one row per owned *album* (pressings collapsed),
+     * left-joined to its rating and notes. An unrated album yields `rating: null` — the
+     * absence of a positive signal, not a low one (CONTEXT.md → "ownership is not
+     * endorsement"). Notes come back verbatim, oldest-first.
+     */
+    withTaste: (): TasteRow[] => {
+      const rows = this.db
+        .prepare(
+          `SELECT c.album_key                AS album_key,
+                  MIN(c.artist)              AS artist,
+                  MIN(c.title)               AS title,
+                  MIN(c.year)                AS year,
+                  MIN(c.genres)              AS genres,
+                  MIN(c.styles)              AS styles,
+                  r.rating                   AS rating
+             FROM collection c
+             LEFT JOIN ratings r ON r.album_key = c.album_key
+            GROUP BY c.album_key
+            ORDER BY artist, title`,
+        )
+        .all() as {
+        album_key: string;
+        artist: string;
+        title: string;
+        year: number | null;
+        genres: string | null;
+        styles: string | null;
+        rating: number | null;
+      }[];
+      return rows.map((row) => ({
+        album_key: row.album_key,
+        artist: row.artist,
+        title: row.title,
+        year: row.year,
+        genres: parseTags(row.genres),
+        styles: parseTags(row.styles),
+        rating: row.rating ?? null,
+        notes: this.notes.listFor(row.album_key).map((n) => n.body),
+      }));
+    },
     /** Album-level ownership check against the *synced library only* (no ledger). */
     ownsAlbum: (albumKey: string): boolean =>
       this.db.prepare("SELECT 1 FROM collection WHERE album_key = ? LIMIT 1").get(albumKey) !==
@@ -163,6 +206,11 @@ export class Store {
       this.db.prepare("SELECT * FROM ratings WHERE album_key = ?").get(albumKey) as
         | RatingRow
         | undefined,
+    /** Remove a rating, returning the album to no-signal (null), not a low score
+     *  (CONTEXT.md → "ownership is not endorsement"). No-op if it was never rated. */
+    clear: (albumKey: string): void => {
+      this.db.prepare("DELETE FROM ratings WHERE album_key = ?").run(albumKey);
+    },
     all: (): RatingRow[] => this.db.prepare("SELECT * FROM ratings").all() as RatingRow[],
   };
 

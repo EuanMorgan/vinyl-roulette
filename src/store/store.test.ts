@@ -61,6 +61,18 @@ describe("Store", () => {
       expect(t.store.ratings.all()).toHaveLength(1);
     });
 
+    it("clears a rating back to no-signal (null), not a low score", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+      const key = albumKey("Various", "Bargain Bin Classics");
+      t.store.ratings.set(key, "Various", "Bargain Bin Classics", 3);
+      expect(t.store.ratings.get(key)?.rating).toBe(3);
+      t.store.ratings.clear(key);
+      expect(t.store.ratings.get(key)).toBeUndefined();
+      // clearing a never-rated album is a no-op, not an error
+      expect(() => t.store.ratings.clear(albumKey("Nobody", "Nothing"))).not.toThrow();
+    });
+
     it("appends multiple notes for one album", () => {
       const t = makeTempStore();
       cleanup = t.cleanup;
@@ -72,6 +84,96 @@ describe("Store", () => {
         "gateway into trip-hop for me",
         "this pressing sounds thin",
       ]);
+    });
+  });
+
+  // The picker-facing taste signal: one row per owned album, annotated with its rating
+  // and notes. This is where "ownership is not endorsement" becomes consumable — an owned
+  // album with no rating is NOT a positive example, so the picker must be able to tell a
+  // loved record (5) from a tolerated one (2) from one carrying no signal at all (null).
+  describe("collection.withTaste (picker taste signal)", () => {
+    function seed(store: ReturnType<typeof makeTempStore>["store"]) {
+      const abbey = albumKey("The Beatles", "Abbey Road");
+      const dummy = albumKey("Portishead", "Dummy");
+      const bin = albumKey("Various", "Now That's What I Call Music 12");
+      store.collection.upsert([
+        {
+          album_key: abbey,
+          artist: "The Beatles",
+          title: "Abbey Road",
+          year: 1969,
+          discogs_instance_id: 1,
+          genres: ["Rock"],
+          styles: ["Pop Rock"],
+        },
+        {
+          album_key: dummy,
+          artist: "Portishead",
+          title: "Dummy",
+          discogs_instance_id: 2,
+          genres: ["Electronic"],
+          styles: ["Trip Hop"],
+        },
+        {
+          album_key: bin,
+          artist: "Various",
+          title: "Now That's What I Call Music 12",
+          discogs_instance_id: 3,
+        },
+      ]);
+      return { abbey, dummy, bin };
+    }
+
+    it("returns one row per album with rating, notes, and parsed tags", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+      const { abbey, dummy } = seed(t.store);
+      t.store.ratings.set(abbey, "The Beatles", "Abbey Road", 5);
+      t.store.ratings.set(dummy, "Portishead", "Dummy", 2);
+      t.store.notes.add(dummy, "Portishead", "Dummy", "gateway into trip-hop for me");
+      t.store.notes.add(dummy, "Portishead", "Dummy", "this pressing sounds thin");
+
+      const taste = t.store.collection.withTaste();
+      const byKey = new Map(taste.map((r) => [r.album_key, r]));
+
+      const loved = byKey.get(abbey)!;
+      expect(loved.rating).toBe(5);
+      expect(loved.genres).toEqual(["Rock"]);
+      expect(loved.styles).toEqual(["Pop Rock"]);
+      expect(loved.notes).toEqual([]);
+
+      const tolerated = byKey.get(dummy)!;
+      expect(tolerated.rating).toBe(2);
+      // notes preserved verbatim, oldest-first, for the Brain to reason over
+      expect(tolerated.notes).toEqual([
+        "gateway into trip-hop for me",
+        "this pressing sounds thin",
+      ]);
+    });
+
+    it("reports an owned-but-unrated album as rating null (ownership is not endorsement)", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+      const { bin } = seed(t.store);
+      const row = t.store.collection.withTaste().find((r) => r.album_key === bin)!;
+      expect(row.rating).toBeNull();
+      expect(row.notes).toEqual([]);
+      // a bargain-bin pick must be distinguishable from a loved one: null !== a number
+      expect(typeof row.rating).not.toBe("number");
+    });
+
+    it("collapses multiple pressings of the same album into one taste row", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+      const key = albumKey("The Beatles", "Abbey Road");
+      t.store.collection.upsert([
+        { album_key: key, artist: "The Beatles", title: "Abbey Road", discogs_instance_id: 10 },
+        { album_key: key, artist: "The Beatles", title: "Abbey Road", discogs_instance_id: 11 },
+      ]);
+      t.store.ratings.set(key, "The Beatles", "Abbey Road", 4);
+      const rows = t.store.collection.withTaste().filter((r) => r.album_key === key);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.rating).toBe(4);
     });
   });
 
