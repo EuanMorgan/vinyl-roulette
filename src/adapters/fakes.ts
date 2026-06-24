@@ -8,6 +8,9 @@
  */
 
 import type {
+  BrainAdapter,
+  BrainCandidate,
+  BrainContext,
   BuyAdapter,
   BuyQuote,
   BuyResult,
@@ -24,6 +27,23 @@ export class FakeDiscogsAdapter implements DiscogsAdapter {
   }
   async fetchCollection(): Promise<DiscogsCollectionItem[]> {
     return this.items;
+  }
+}
+
+/**
+ * Stands in for Claude's in-context reasoning: returns a canned, ordered candidate list
+ * and records the context it was asked with so tests can assert what the Brain saw.
+ */
+export class FakeBrainAdapter implements BrainAdapter {
+  constructor(private candidates: BrainCandidate[] = []) {}
+  /** The context of the most recent `propose` call (for assertions). */
+  lastContext?: BrainContext;
+  setCandidates(candidates: BrainCandidate[]): void {
+    this.candidates = candidates;
+  }
+  async propose(ctx: BrainContext): Promise<BrainCandidate[]> {
+    this.lastContext = ctx;
+    return this.candidates;
   }
 }
 

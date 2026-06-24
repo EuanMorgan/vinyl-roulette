@@ -107,12 +107,18 @@ export interface LedgerRow {
   created_at: string;
 }
 
+/** Lane weights for the chaos dial; need not sum to 1, the picker normalizes. */
+export interface ChaosDial {
+  complete: number;
+  adjacent: number;
+  stretch: number;
+}
+
 /** Typed view of the key/value config table. */
 export interface Config {
   monthlyCapPence: number;
   perPurchaseCeilingPence: number;
-  /** Lane weights for the chaos dial; need not sum to 1, the picker normalizes. */
-  chaosDial: { complete: number; adjacent: number; stretch: number };
+  chaosDial: ChaosDial;
   priceDriftTolerancePence: number;
   paused: boolean;
 }

@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { FakeBuyAdapter, FakeDiscogsAdapter, FakePricingAdapter } from "./fakes";
+import {
+  FakeBrainAdapter,
+  FakeBuyAdapter,
+  FakeDiscogsAdapter,
+  FakePricingAdapter,
+} from "./fakes";
 
 describe("adapter fakes (the documented faking pattern)", () => {
   it("FakeDiscogsAdapter returns its canned collection", async () => {
@@ -32,6 +37,21 @@ describe("adapter fakes (the documented faking pattern)", () => {
 
     pricing.markGone("https://a/y");
     expect(await pricing.revalidate("https://a/y")).toBeNull();
+  });
+
+  it("FakeBrainAdapter returns canned candidates and records the context it saw", async () => {
+    const brain = new FakeBrainAdapter([
+      { artist: "Miles Davis", title: "Kind of Blue", lane: "stretch", why: "jazz on-ramp" },
+    ]);
+    const ctx = {
+      owned: [{ artist: "The Beatles", title: "Abbey Road" }],
+      rejectedKeys: [],
+      chaosDial: { complete: 0.5, adjacent: 0.35, stretch: 0.15 },
+    };
+    const candidates = await brain.propose(ctx);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.lane).toBe("stretch");
+    expect(brain.lastContext).toBe(ctx);
   });
 
   it("FakeBuyAdapter records prepare/pay and can be forced to fail", async () => {

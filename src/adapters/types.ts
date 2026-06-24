@@ -13,7 +13,7 @@
  * land in their own later slices; this slice only establishes the shape + faking pattern.
  */
 
-import type { Lane, Source } from "@/store/types";
+import type { ChaosDial, Lane, Source } from "@/store/types";
 
 /** One owned record as returned by a Discogs collection sync. */
 export interface DiscogsCollectionItem {
@@ -88,4 +88,49 @@ export interface PickIntent {
   artist: string;
   title: string;
   lane: Lane;
+}
+
+/** One owned album as taste evidence for the Brain (genres + the learning signal). */
+export interface OwnedAlbumContext {
+  artist: string;
+  title: string;
+  genres?: string[];
+  styles?: string[];
+  /** User rating, if any — distinguishes loved from merely tolerated (ownership ≠ endorsement). */
+  rating?: number;
+  /** Free-text notes the user left on this album. */
+  notes?: string[];
+}
+
+/** Everything the Brain reasons over to propose candidates for one Run. */
+export interface BrainContext {
+  /** The Owned set as taste evidence (collection ∪ purchase ledger). */
+  owned: OwnedAlbumContext[];
+  /** Album keys already in the Rejected log — don't re-suggest these (CONTEXT.md). */
+  rejectedKeys: string[];
+  /** Lane weights for this Run; the Brain may bias its proposals, the picker weights selection. */
+  chaosDial: ChaosDial;
+}
+
+/** A record the Brain wants, tagged with its Lane and the rationale for the Reveal. */
+export interface BrainCandidate {
+  artist: string;
+  title: string;
+  lane: Lane;
+  /** One-line rationale ("why it was picked"), surfaced on the Reveal screen. */
+  why: string;
+  discogsReleaseId?: number;
+}
+
+/**
+ * The Brain seam: proposes ranked candidate picks across the three Lanes. The *real*
+ * implementation is Claude reasoning in-context each Run (ADR-0001) — there is no trained
+ * recommender or gap-detection algorithm. This slice (#5) consumes a fake at this boundary
+ * so the picker is a deterministic pure function; the real Brain lands in a later slice.
+ *
+ * Candidates are returned best-first *within* each Lane; the picker applies the chaos-dial
+ * weighting + seed to decide which Lane (and thus which candidate) actually wins.
+ */
+export interface BrainAdapter {
+  propose(ctx: BrainContext): Promise<BrainCandidate[]>;
 }

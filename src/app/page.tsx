@@ -13,6 +13,7 @@ export default function Home() {
   const config = store.config.get();
   const balancePence = store.ledger.balance();
   const collection = store.collection.withTaste();
+  const proposed = store.orders.listByStatus("PROPOSED");
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-12">
@@ -29,6 +30,38 @@ export default function Home() {
         <Stat label="Per-purchase ceiling" value={formatGBP(config.perPurchaseCeilingPence)} />
         <Stat label="Status" value={config.paused ? "Paused" : "Active"} />
       </section>
+
+      {proposed.length > 0 && (
+        <section className="mb-8">
+          <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-400">
+            Pending approval
+          </h2>
+          <ul className="space-y-2">
+            {proposed.map((order) => (
+              // The surprise: show price + source ONLY, never the title or the why
+              // (CONTEXT.md → Two-phase buy). Euan authorises the spend, not the record.
+              <li
+                key={order.id}
+                className="rounded-lg border border-amber-900/60 bg-amber-950/20 px-4 py-3"
+              >
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="font-medium text-amber-200">
+                    A record is on its way 🎉
+                  </span>
+                  <span className="text-lg font-semibold">
+                    {formatGBP(order.quoted_price_pence)}
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-neutral-400">
+                  Approve {formatGBP(order.quoted_price_pence)} at{" "}
+                  <span className="capitalize text-neutral-200">{order.source}</span>. The
+                  title stays a secret until it arrives.
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section>
         <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-400">
