@@ -110,10 +110,38 @@ export class Store {
     },
     all: (): CollectionRow[] =>
       this.db.prepare("SELECT * FROM collection ORDER BY artist, title").all() as CollectionRow[],
-    /** Album-level ownership check (CONTEXT.md → Collection). */
+    /** Album-level ownership check against the *synced library only* (no ledger). */
     ownsAlbum: (albumKey: string): boolean =>
       this.db.prepare("SELECT 1 FROM collection WHERE album_key = ? LIMIT 1").get(albumKey) !==
       undefined,
+  };
+
+  // ── owned set (collection ∪ purchase ledger) ──────────────────────────────
+  // CONTEXT.md → "Collection / Owned set": dupe-avoidance matches against the union of
+  // the read-synced Discogs library AND the records the app has itself bought. A record
+  // counts as bought once its order reaches ORDERED (payment cleared) — the app DB is
+  // authoritative for its own purchases, Discogs for what Euan logged himself.
+  readonly owned = {
+    /** Album-level ownership across library + bought orders. */
+    has: (albumKey: string): boolean =>
+      this.db
+        .prepare(
+          `SELECT 1 WHERE EXISTS (SELECT 1 FROM collection WHERE album_key = @key)
+                       OR EXISTS (SELECT 1 FROM orders
+                                  WHERE album_key = @key AND status IN ('ORDERED', 'ARRIVED'))`,
+        )
+        .get({ key: albumKey }) !== undefined,
+    /** Every owned album_key (deduped) — the set the picker excludes from candidates. */
+    keys: (): string[] =>
+      (
+        this.db
+          .prepare(
+            `SELECT album_key FROM collection
+             UNION
+             SELECT album_key FROM orders WHERE status IN ('ORDERED', 'ARRIVED')`,
+          )
+          .all() as { album_key: string }[]
+      ).map((r) => r.album_key),
   };
 
   // ── ratings ─────────────────────────────────────────────────────────────

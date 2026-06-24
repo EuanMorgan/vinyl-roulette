@@ -35,5 +35,32 @@ pricing.markGone("https://discogs/x");            // listing vanished
 pricing.setDriftedPrice("https://amazon/y", 2900); // price drifted +£4 over quote
 ```
 
-The real `DiscogsAdapter`, `PricingAdapter`, and `BuyAdapter` implementations land in
-their own later slices. This slice ships only the contracts and the fakes.
+## Implementations
+
+| Interface         | Real implementation             | Status                         |
+| ----------------- | ------------------------------- | ------------------------------ |
+| `DiscogsAdapter`  | `HttpDiscogsAdapter` (`discogs.ts`) | Shipped (issue #3)         |
+| `PricingAdapter`  | —                               | Later slice (issue #6)         |
+| `BuyAdapter`      | —                               | Later slice (issue #7 / #9)    |
+
+### Discogs (`HttpDiscogsAdapter`)
+
+Reads Euan's collection from the Discogs API (`/users/{username}/collection/folders/0/releases`),
+paginated, and maps each owned copy to a `DiscogsCollectionItem` (artist, title, year,
+release/instance ids, genres, styles).
+
+- **Auth / OAuth scope.** Single-user local app (ADR-0001), so it uses a Discogs
+  **personal access token** instead of the 3-legged OAuth flow. The token is scoped to the
+  owner's own account — exactly what listing _your_ collection needs, and **no write scope**
+  (collection write-back on arrival is issue #10). Sent as `Authorization: Discogs token=…`.
+  Config via `DISCOGS_USERNAME` / `DISCOGS_TOKEN` (see `.env.example`); build with
+  `discogsAdapterFromEnv()`, which returns `null` when unset so callers degrade gracefully.
+- **Rate limits.** Discogs allows ~60 authenticated requests/min and reports budget in
+  `X-Discogs-Ratelimit-*` headers. The adapter pauses before the next page when the
+  remaining budget is low and backs off + retries on HTTP 429 (capped by `maxRetries`).
+- **Testing.** The `DiscogsAdapter` _interface_ is faked via `FakeDiscogsAdapter` for the
+  sync-service tests. `HttpDiscogsAdapter`'s own pagination/rate-limit logic is tested
+  separately with an injected `fetch` + `sleep` (`discogs.test.ts`) — still no live calls.
+
+The remaining `PricingAdapter` and `BuyAdapter` implementations land in their own later
+slices. This convention keeps every external dependency behind a thin, fakeable seam.

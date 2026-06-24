@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "agent:run": "tsx src/agent/run.ts",
+    "discogs:sync": "tsx src/agent/sync-collection.ts",
     "db:migrate": "tsx src/store/cli-migrate.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

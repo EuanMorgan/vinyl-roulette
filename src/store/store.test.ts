@@ -124,6 +124,63 @@ describe("Store", () => {
     });
   });
 
+  describe("owned set (collection ∪ purchase ledger)", () => {
+    it("unions the synced library with bought orders, album-level", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+
+      const synced = albumKey("The Beatles", "Abbey Road");
+      t.store.collection.upsert([
+        { album_key: synced, artist: "The Beatles", title: "Abbey Road", discogs_instance_id: 1 },
+      ]);
+
+      // An order only counts as owned once it reaches ORDERED (payment cleared).
+      const bought = albumKey("Wings", "Band on the Run");
+      const order = t.store.orders.propose({
+        album_key: bought,
+        artist: "Wings",
+        title: "Band on the Run",
+        intent: "gap_fill",
+        source: "amazon",
+        listing_url: "https://amazon.example/x",
+        quoted_price_pence: 2500,
+      });
+
+      // PROPOSED is not yet owned — nothing has been bought.
+      expect(t.store.owned.has(bought)).toBe(false);
+      expect(t.store.collection.ownsAlbum(bought)).toBe(false);
+
+      t.store.orders.setStatus(order.id, "ORDERED", { final_price_pence: 2500 });
+
+      expect(t.store.owned.has(synced)).toBe(true); // from the library
+      expect(t.store.owned.has(bought)).toBe(true); // from the ledger
+      expect(t.store.owned.has(albumKey("Pixies", "Doolittle"))).toBe(false);
+
+      // collection.ownsAlbum stays library-only; owned.has is the union.
+      expect(t.store.collection.ownsAlbum(bought)).toBe(false);
+
+      expect(new Set(t.store.owned.keys())).toEqual(new Set([synced, bought]));
+    });
+
+    it("does not count declined or stale orders as owned", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+      const key = albumKey("Radiohead", "Kid A");
+      const order = t.store.orders.propose({
+        album_key: key,
+        artist: "Radiohead",
+        title: "Kid A",
+        intent: "gap_fill",
+        source: "discogs",
+        listing_url: "https://discogs.example/y",
+        quoted_price_pence: 3000,
+      });
+      t.store.orders.setStatus(order.id, "DECLINED");
+      expect(t.store.owned.has(key)).toBe(false);
+      expect(t.store.owned.keys()).toEqual([]);
+    });
+  });
+
   describe("ledger / balance (war chest)", () => {
     it("accumulates a signed running balance across entries", () => {
       const t = makeTempStore();
