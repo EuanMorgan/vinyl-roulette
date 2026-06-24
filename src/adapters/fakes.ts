@@ -16,8 +16,10 @@ import type {
   BuyResult,
   DiscogsAdapter,
   DiscogsCollectionItem,
+  NotificationAdapter,
   PriceListing,
   PricingAdapter,
+  ProposedNotification,
 } from "./types";
 
 export class FakeDiscogsAdapter implements DiscogsAdapter {
@@ -105,5 +107,14 @@ export class FakeBuyAdapter implements BuyAdapter {
     this.paid.push(quote);
     if (this.payError) return { ok: false, error: this.payError };
     return { ok: true, finalPricePence: quote.expectedPricePence, reference: "FAKE-REF" };
+  }
+}
+
+/** Records every PROPOSED notification so tests can assert price + source were surfaced. */
+export class FakeNotificationAdapter implements NotificationAdapter {
+  readonly sent: ProposedNotification[] = [];
+
+  async proposed(notification: ProposedNotification): Promise<void> {
+    this.sent.push(notification);
   }
 }

@@ -37,11 +37,12 @@ pricing.setDriftedPrice("https://amazon/y", 2900); // price drifted +£4 over qu
 
 ## Implementations
 
-| Interface         | Real implementation             | Status                         |
-| ----------------- | ------------------------------- | ------------------------------ |
-| `DiscogsAdapter`  | `HttpDiscogsAdapter` (`discogs.ts`) | Shipped (issue #3)         |
-| `PricingAdapter`  | `HttpPricingAdapter` (`pricing.ts`) | Shipped (issue #6)         |
-| `BuyAdapter`      | —                               | Later slice (issue #7 / #9)    |
+| Interface             | Real implementation                       | Status                                  |
+| --------------------- | ----------------------------------------- | --------------------------------------- |
+| `DiscogsAdapter`      | `HttpDiscogsAdapter` (`discogs.ts`)       | Shipped (issue #3)                      |
+| `PricingAdapter`      | `HttpPricingAdapter` (`pricing.ts`)       | Shipped (issue #6)                      |
+| `NotificationAdapter` | `WindowsToastNotificationAdapter` (`notify.ts`) | Shipped (issue #7)                |
+| `BuyAdapter`          | —                                         | Lifecycle drives a fake (#7); real Playwright in #9 |
 
 ### Discogs (`HttpDiscogsAdapter`)
 
@@ -87,5 +88,23 @@ _source-selector_, never a record-selector — CONTEXT.md). Shape: a composite o
 - **Config.** `DISCOGS_TOKEN` (optional — lifts search rate limits) + `AMAZON_BASE_URL` (locale).
   Build with `pricingAdapterFromEnv()`; both sources have public defaults so it never returns null.
 
-The remaining `BuyAdapter` implementation lands in its own later slice. This convention keeps
+### Notifications (`WindowsToastNotificationAdapter`)
+
+The "a record is on its way — approve £X at \<source\>" desktop nudge auto-prep raises when an
+order reaches PROPOSED (issue #7). **Title-hiding by design** (CONTEXT.md → Two-phase buy): the
+`ProposedNotification` payload carries price + source only, never the record title, so the
+surprise survives until the arrival Reveal.
+
+- **Windows toast (`WindowsToastNotificationAdapter`).** Raises a native WinRT toast via a
+  one-shot PowerShell call — no npm dependency. Works from a headless scheduled Run because the
+  toast surfaces in Euan's logged-in session.
+- **Degrades, never throws.** By the time we notify, a valid PROPOSED Quote is already parked; a
+  notification failure must not undo a completed auto-prep, so the toast swallows its own errors
+  and falls back to a console line. `ConsoleNotificationAdapter` is the always-works fallback on
+  non-Windows platforms.
+- **Config.** `notificationAdapterFromEnv()` picks the Windows toast on `win32`, else the console
+  adapter. Tests inject `FakeNotificationAdapter` and read back `.sent`.
+
+The remaining `BuyAdapter` implementation (the real Playwright finalize + Decline) lands in
+issue #9; issue #7 drives the order lifecycle against `FakeBuyAdapter`. This convention keeps
 every external dependency behind a thin, fakeable seam.

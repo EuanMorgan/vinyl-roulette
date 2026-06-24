@@ -85,15 +85,37 @@ export interface BuyResult {
 }
 
 /**
- * The Hands: Playwright driving Euan's real Chrome profile (ADR-0003). Split to honour
- * the two-phase buy — `prepare` runs unattended up to the payment button; `pay` runs
- * attended after Euan approves and clears any 2FA.
+ * The Hands: Playwright driving Euan's real Chrome profile (ADR-0003). Both calls run at
+ * APPROVAL time, fresh — auto-prep holds *no* live cart (it stores a Quote; CONTEXT.md →
+ * Order lifecycle), so the browser is only ever driven once Euan has approved the spend.
+ * `prepare` re-opens the re-validated listing and drives to the payment button; Euan then
+ * clears any 2FA / PayPal / CVV challenge a bot can't; `pay` finalizes. The split exists so
+ * the human-in-the-loop step (#9) sits cleanly between drive-to-button and finalize.
  */
 export interface BuyAdapter {
-  /** Unattended: drive to the payment button for this quote. */
+  /** Re-open the listing fresh and drive to the payment button for this quote. */
   prepare(quote: BuyQuote): Promise<{ ready: boolean; error?: string }>;
-  /** Attended: finalize payment (Euan has cleared 2FA). */
+  /** Finalize payment (Euan has cleared any 2FA challenge). */
   pay(quote: BuyQuote): Promise<BuyResult>;
+}
+
+/** What auto-prep tells the human when an order reaches PROPOSED — price + source only. */
+export interface ProposedNotification {
+  orderId: number;
+  source: Source;
+  /** Quoted landed cost in pence (GBP). */
+  pricePence: number;
+}
+
+/**
+ * The notify seam: a local desktop notification raised when auto-prep parks a PROPOSED
+ * order ("a record is on its way — approve £X at <source>"). It must work from a *headless*
+ * scheduled Run (ADR-0001), and is **title-hiding by design** — the payload carries price +
+ * source only, never the record title, so the surprise survives until the arrival Reveal
+ * (CONTEXT.md → Two-phase buy). Tests inject `FakeNotificationAdapter` at this boundary.
+ */
+export interface NotificationAdapter {
+  proposed(notification: ProposedNotification): Promise<void>;
 }
 
 /** A pick the Brain decided on, before sourcing/pricing — for documentation/typing. */
