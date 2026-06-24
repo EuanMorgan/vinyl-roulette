@@ -26,6 +26,14 @@ build/
 *.tsbuildinfo
 .cache/
 
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Local data dir (the SQLite spine lives here; *.db already ignored above)
+/data/
+
 # Logs & run output
 logs/
 *.log

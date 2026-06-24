@@ -1,0 +1,89 @@
+/**
+ * In-memory fakes for the adapter seam. This is the documented faking pattern (PRD →
+ * Testing Decisions): tests construct a fake with canned data, inject it where the real
+ * adapter would go, and assert on behaviour at the seam — never on network or a browser.
+ *
+ * Fakes are *configurable data holders*, not mocks: you set up their world up front
+ * (a collection, a price table, "this listing is now gone") and read back what happened.
+ */
+
+import type {
+  BuyAdapter,
+  BuyQuote,
+  BuyResult,
+  DiscogsAdapter,
+  DiscogsCollectionItem,
+  PriceListing,
+  PricingAdapter,
+} from "./types";
+
+export class FakeDiscogsAdapter implements DiscogsAdapter {
+  constructor(private items: DiscogsCollectionItem[] = []) {}
+  setCollection(items: DiscogsCollectionItem[]): void {
+    this.items = items;
+  }
+  async fetchCollection(): Promise<DiscogsCollectionItem[]> {
+    return this.items;
+  }
+}
+
+/** Keyed by `${artist}::${title}` (case-insensitive); set listings per album. */
+export class FakePricingAdapter implements PricingAdapter {
+  private table = new Map<string, PriceListing[]>();
+  /** Listings the `revalidate` call should treat as gone, by URL. */
+  private gone = new Set<string>();
+  /** Override a listing's revalidated price, by URL (simulates price drift). */
+  private drifted = new Map<string, number>();
+
+  private key(artist: string, title: string): string {
+    return `${artist}::${title}`.toLowerCase();
+  }
+
+  setListings(artist: string, title: string, listings: PriceListing[]): void {
+    this.table.set(this.key(artist, title), listings);
+  }
+  markGone(listingUrl: string): void {
+    this.gone.add(listingUrl);
+  }
+  setDriftedPrice(listingUrl: string, landedPricePence: number): void {
+    this.drifted.set(listingUrl, landedPricePence);
+  }
+
+  async lookup(query: { artist: string; title: string }): Promise<PriceListing[]> {
+    return this.table.get(this.key(query.artist, query.title)) ?? [];
+  }
+
+  async revalidate(listingUrl: string): Promise<PriceListing | null> {
+    if (this.gone.has(listingUrl)) return null;
+    for (const listings of this.table.values()) {
+      const found = listings.find((l) => l.listingUrl === listingUrl);
+      if (found) {
+        const drift = this.drifted.get(listingUrl);
+        return drift === undefined ? found : { ...found, landedPricePence: drift };
+      }
+    }
+    return null;
+  }
+}
+
+/** Records every prepare/pay call so tests can assert the lifecycle drove the Hands. */
+export class FakeBuyAdapter implements BuyAdapter {
+  readonly prepared: BuyQuote[] = [];
+  readonly paid: BuyQuote[] = [];
+  /** Set to make `prepare` report not-ready. */
+  prepareError?: string;
+  /** Set to make `pay` fail. */
+  payError?: string;
+
+  async prepare(quote: BuyQuote): Promise<{ ready: boolean; error?: string }> {
+    this.prepared.push(quote);
+    if (this.prepareError) return { ready: false, error: this.prepareError };
+    return { ready: true };
+  }
+
+  async pay(quote: BuyQuote): Promise<BuyResult> {
+    this.paid.push(quote);
+    if (this.payError) return { ok: false, error: this.payError };
+    return { ok: true, finalPricePence: quote.expectedPricePence, reference: "FAKE-REF" };
+  }
+}
