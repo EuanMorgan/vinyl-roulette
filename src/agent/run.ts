@@ -16,8 +16,15 @@
  * Usage: `npm run agent:run [-- --trigger scheduled]`  (set VINYL_DEMO=1 for a demo pick)
  */
 import { pathToFileURL } from "node:url";
-import type { BrainAdapter, BrainContext, OwnedAlbumContext, PricingAdapter } from "@/adapters/types";
+import type {
+  BrainAdapter,
+  BrainContext,
+  NotificationAdapter,
+  OwnedAlbumContext,
+  PricingAdapter,
+} from "@/adapters/types";
 import { FakeBrainAdapter, FakePricingAdapter } from "@/adapters/fakes";
+import { notificationAdapterFromEnv } from "@/adapters/notify";
 import { openDb, resolveDbPath } from "@/store/db";
 import { Store } from "@/store/store";
 import { formatGBP } from "@/store/money";
@@ -74,6 +81,12 @@ export interface GapFillDeps {
   pricing: PricingAdapter;
   /** Injected randomness seed — fixes the picker's lane selection for this Run. */
   seed: number;
+  /**
+   * Raises the "a record is on its way" desktop nudge when a PROPOSED Quote is parked
+   * (CONTEXT.md → Two-phase buy). Optional so the picker/store seams stay testable without
+   * it; the scheduled Run and the STALE re-pick wire a real notifier so Euan is pulled in.
+   */
+  notifier?: NotificationAdapter;
 }
 
 export interface GapFillOutcome {
@@ -154,6 +167,16 @@ export async function runGapFill(
     "finished",
     `Proposed a ${q.lane} pick from ${q.source} at ${formatGBP(q.landedPricePence)} — pending approval.`,
   );
+  // Pull Euan in for the irreducible payment step. Title-hiding by design: the notifier only
+  // ever sees price + source. A notification failure must not undo a parked Quote, so the
+  // adapter swallows its own errors (see notify.ts).
+  if (deps.notifier) {
+    await deps.notifier.proposed({
+      orderId: order.id,
+      source: order.source,
+      pricePence: order.quoted_price_pence,
+    });
+  }
   return { runId: run.id, order, rejected: result.rejected.length };
 }
 
@@ -179,7 +202,7 @@ function demoDeps(): GapFillDeps {
   pricing.setListings("The Beatles", "Let It Be", [
     { source: "amazon", listingUrl: "https://amazon.example/letitbe", landedPricePence: 2400, available: true },
   ]);
-  return { brain, pricing, seed: 1 };
+  return { brain, pricing, seed: 1, notifier: notificationAdapterFromEnv() };
 }
 
 async function main(): Promise<void> {
