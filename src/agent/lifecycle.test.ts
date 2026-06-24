@@ -11,7 +11,7 @@ import {
   FakeNotificationAdapter,
   FakePricingAdapter,
 } from "@/adapters/fakes";
-import type { BrainCandidate, PriceListing } from "@/adapters/types";
+import type { BrainCandidate, BuyAdapter, PriceListing, PricingAdapter } from "@/adapters/types";
 import { makeTempStore } from "@/store/test-helpers";
 import type { Store } from "@/store/store";
 import { runGapFill } from "./run";
@@ -225,6 +225,62 @@ describe("order lifecycle", () => {
       // No money recorded on a failed payment.
       expect(store.ledger.list().some((e) => e.entry_type === "order_placed")).toBe(false);
       expect(store.ledger.balance()).toBe(5000);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("folds a thrown buy-adapter rejection into FAILED (never stuck APPROVED)", async () => {
+    const { store, cleanup } = makeTempStore();
+    try {
+      fund(store, 5000);
+      const { deps } = makeDeps([JIS], {
+        "Alice Coltrane::Journey in Satchidananda": [avail("discogs", 2650, JIS_URL)],
+      });
+      const prep = await runGapFill(store, deps, "scheduled");
+      // The real Playwright Hands can throw rather than return { ok: false }.
+      const throwingBuy: BuyAdapter = {
+        async prepare() {
+          return { ready: true };
+        },
+        async pay() {
+          throw new Error("browser crashed mid-checkout");
+        },
+      };
+
+      const result = await approveOrder(store, { ...deps, buy: throwingBuy }, prep!.order!.id);
+      expect(result.outcome).toBe("failed");
+      if (result.outcome === "failed") expect(result.error).toContain("browser crashed");
+      expect(store.orders.get(prep!.order!.id)!.status).toBe("FAILED");
+      expect(store.ledger.list().some((e) => e.entry_type === "order_placed")).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("bails out as not_proposed if the order stops being PROPOSED during revalidation", async () => {
+    const { store, cleanup } = makeTempStore();
+    try {
+      fund(store, 5000);
+      const { deps, buy } = makeDeps([JIS], {
+        "Alice Coltrane::Journey in Satchidananda": [avail("discogs", 2650, JIS_URL)],
+      });
+      const prep = await runGapFill(store, deps, "scheduled");
+      const orderId = prep!.order!.id;
+      // Simulate a concurrent approval landing during the async revalidate gap (a UI double-tap).
+      const racingPricing: PricingAdapter = {
+        lookup: (q) => deps.pricing.lookup(q),
+        async revalidate(url) {
+          store.orders.setStatus(orderId, "APPROVED");
+          return deps.pricing.revalidate(url);
+        },
+      };
+
+      const result = await approveOrder(store, { ...deps, pricing: racingPricing }, orderId);
+      expect(result.outcome).toBe("not_proposed");
+      // The second approval never drove the Hands — no double-buy.
+      expect(buy.paid).toHaveLength(0);
+      expect(buy.prepared).toHaveLength(0);
     } finally {
       cleanup();
     }

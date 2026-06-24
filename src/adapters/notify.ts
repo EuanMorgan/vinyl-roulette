@@ -77,18 +77,32 @@ function psEscape(s: string): string {
   return s.replace(/'/g, "''");
 }
 
-/** Run a PowerShell snippet, resolving on exit 0 and rejecting otherwise. */
-function runPowerShell(script: string): Promise<void> {
+/**
+ * Run a PowerShell snippet, resolving on exit 0 and rejecting otherwise. A bounded timeout kills
+ * a hung `powershell.exe` (locked-down WinRT, a blocked WinRT call) and rejects, so the `await`
+ * in `proposed()` can never stall a Run — a notification is best-effort once the Quote is parked.
+ */
+function runPowerShell(script: string, timeoutMs = 10_000): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
       { windowsHide: true, stdio: "ignore" },
     );
-    child.on("error", reject);
-    child.on("exit", (code) =>
-      code === 0 ? resolve() : reject(new Error(`powershell exited ${code}`)),
-    );
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`powershell timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`powershell exited ${code}`));
+    });
   });
 }
 

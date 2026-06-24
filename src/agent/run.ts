@@ -171,11 +171,18 @@ export async function runGapFill(
   // ever sees price + source. A notification failure must not undo a parked Quote, so the
   // adapter swallows its own errors (see notify.ts).
   if (deps.notifier) {
-    await deps.notifier.proposed({
-      orderId: order.id,
-      source: order.source,
-      pricePence: order.quoted_price_pence,
-    });
+    try {
+      await deps.notifier.proposed({
+        orderId: order.id,
+        source: order.source,
+        pricePence: order.quoted_price_pence,
+      });
+    } catch (err) {
+      // The Quote is already safely PROPOSED and the Run has finished; a notifier that throws
+      // must not fail the Run or make a caller retry. The built-in adapters swallow their own
+      // errors (see notify.ts) — this guards a custom/misbehaving NotificationAdapter too.
+      console.warn("[run] proposed-order notification failed:", err);
+    }
   }
   return { runId: run.id, order, rejected: result.rejected.length };
 }

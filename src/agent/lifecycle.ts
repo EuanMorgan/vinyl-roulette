@@ -20,7 +20,7 @@
  * This slice swaps in a faked `BuyAdapter`; the real Playwright finalize + Decline arrive in
  * issue #9, and the arrival Reveal + Discogs write-back in issue #10 build on `markArrived`.
  */
-import type { BuyAdapter, BuyQuote, PricingAdapter } from "@/adapters/types";
+import type { BuyAdapter, BuyQuote, BuyResult, PricingAdapter } from "@/adapters/types";
 import type { Store } from "@/store/store";
 import type { OrderRow, RunTrigger } from "@/store/types";
 import { runGapFill, type GapFillDeps, type GapFillOutcome } from "./run";
@@ -64,6 +64,15 @@ export async function approveOrder(
   const gone = live === null || !live.available;
   const driftedOver = live !== null && live.landedPricePence - order.quoted_price_pence > tolerance;
 
+  // `revalidate` is an async gap during which a double-tapped approval could interleave and reach
+  // payment twice. ADR-0002 rules out true multi-process races (agent and UI never run at once),
+  // so a re-read here — synchronous before any write — is enough to fold a second concurrent
+  // approval into the no-op guard; a full store-level compare-and-set would be over-built.
+  const current = store.orders.get(orderId);
+  if (!current || current.status !== "PROPOSED") {
+    return { outcome: "not_proposed", order: current };
+  }
+
   if (gone || driftedOver) {
     const staleOrder = store.orders.setStatus(orderId, "STALE");
     // Log to Rejected so the re-pick excludes this album and future Runs don't re-suggest it.
@@ -95,12 +104,19 @@ export async function approveOrder(
     expectedPricePence: finalQuotePrice,
   };
 
-  const prep = await deps.buy.prepare(quote);
+  // The real Playwright Hands (#9) may *throw* (browser crash, navigation timeout), not just
+  // return a failure object. Either way the order must land in FAILED and be surfaced to Euan,
+  // never left stuck in APPROVED — so a thrown rejection is folded into the same failure path.
+  const prep = await deps.buy
+    .prepare(quote)
+    .catch((err: unknown) => ({ ready: false as const, error: errorMessage(err) }));
   if (!prep.ready) {
     return fail(store, orderId, prep.error ?? "could not drive to the payment button");
   }
 
-  const paid = await deps.buy.pay(quote);
+  const paid: BuyResult = await deps.buy
+    .pay(quote)
+    .catch((err: unknown) => ({ ok: false, error: errorMessage(err) }));
   if (!paid.ok) {
     return fail(store, orderId, paid.error ?? "payment did not complete");
   }
@@ -130,9 +146,15 @@ export function markArrived(store: Store, orderId: number): OrderRow | undefined
   return store.orders.setStatus(orderId, "ARRIVED");
 }
 
+/** Park an order in FAILED (drive-to-button or payment failed) and surface the reason to Euan. */
 function fail(store: Store, orderId: number, error: string): ApproveResult {
   const order = store.orders.setStatus(orderId, "FAILED");
   return { outcome: "failed", order, error };
+}
+
+/** Best-effort message from an unknown thrown value, for the FAILED reason + ledger note. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Narrow ApproveDeps back to the picker's GapFillDeps for the STALE re-pick. */
