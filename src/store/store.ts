@@ -4,6 +4,7 @@ import {
   DEFAULT_CONFIG,
   type Config,
   type CollectionRow,
+  type LedgerActivityEvent,
   type LedgerEntryType,
   type LedgerRow,
   type NoteRow,
@@ -265,6 +266,32 @@ export class Store {
     hasAlbum: (albumKey: string): boolean =>
       this.db.prepare("SELECT 1 FROM rejected_log WHERE album_key = ? LIMIT 1").get(albumKey) !==
       undefined,
+    /**
+     * The Splurge wishlist (CONTEXT.md → "The Rejected log is dual-purpose"): one row per
+     * rejected *album* that carries a price, priciest-first — exactly the pricey reject a fat
+     * war chest later clears. The stored quote is the affordability *hint*; the actual Splurge
+     * re-prices live before buying. Albums with no recorded price (e.g. out-of-stock with no
+     * quote) can't be sized against the chest, so they're excluded.
+     */
+    splurgeWishlist: (): SplurgeWishlistRow[] =>
+      this.db
+        .prepare(
+          `SELECT album_key,
+                  MIN(artist)                AS artist,
+                  MIN(title)                 AS title,
+                  MAX(lane)                  AS lane,
+                  MAX(quoted_price_pence)    AS quoted_price_pence
+             FROM rejected_log
+            WHERE quoted_price_pence IS NOT NULL
+            GROUP BY album_key
+            ORDER BY quoted_price_pence DESC, album_key`,
+        )
+        .all() as SplurgeWishlistRow[],
+    /** Clear every Rejected-log row for an album — e.g. when a Splurge finally lands it,
+     *  so it stops being both "don't re-suggest" memory and a Splurge target. Returns the
+     *  number of rows removed. */
+    clearAlbum: (albumKey: string): number =>
+      this.db.prepare("DELETE FROM rejected_log WHERE album_key = ?").run(albumKey).changes,
   };
 
   // ── orders (the lifecycle) ─────────────────────────────────────────────────
@@ -298,6 +325,11 @@ export class Store {
     },
     get: (id: number): OrderRow | undefined =>
       this.db.prepare("SELECT * FROM orders WHERE id = ?").get(id) as OrderRow | undefined,
+    /** Orders newest-first, optionally bounded — used by the spend-ledger activity timeline. */
+    all: (limit?: number): OrderRow[] =>
+      limit === undefined
+        ? (this.db.prepare("SELECT * FROM orders ORDER BY id DESC").all() as OrderRow[])
+        : (this.db.prepare("SELECT * FROM orders ORDER BY id DESC LIMIT ?").all(limit) as OrderRow[]),
     listByStatus: (status: OrderStatus): OrderRow[] =>
       this.db
         .prepare("SELECT * FROM orders WHERE status = ? ORDER BY id DESC")
@@ -329,6 +361,27 @@ export class Store {
 
   // ── ledger / balance ───────────────────────────────────────────────────────
   readonly ledger = {
+    /**
+     * Accrue the monthly cap into the war chest for a Run (issue #8): the balance is
+     * `cap + carried-over unspent funds`, and "carried over" is automatic because the
+     * running sum is never reset. Idempotent per Run — a second call for the same `runId`
+     * is a no-op (returns null), so a re-entered or retried Run can't inflate the chest.
+     */
+    accrueCap: (runId: number, amountPence: number): LedgerRow | null => {
+      const accrue = this.db.transaction((): LedgerRow | null => {
+        const existing = this.db
+          .prepare("SELECT 1 FROM ledger WHERE run_id = ? AND entry_type = 'cap_added' LIMIT 1")
+          .get(runId);
+        if (existing) return null;
+        return this.ledger.append({
+          run_id: runId,
+          entry_type: "cap_added",
+          amount_pence: amountPence,
+          note: "Monthly cap",
+        });
+      });
+      return accrue();
+    },
     /** Append a signed entry; balance_after is computed from the running sum. */
     append: (entry: LedgerInput): LedgerRow => {
       const append = this.db.transaction((e: LedgerInput): LedgerRow => {
@@ -364,6 +417,42 @@ export class Store {
     },
     list: (limit = 100): LedgerRow[] =>
       this.db.prepare("SELECT * FROM ledger ORDER BY id DESC LIMIT ?").all(limit) as LedgerRow[],
+    /**
+     * The spend-ledger transparency surface (issue #8): every money movement (cap accrued,
+     * order placed — carrying the running balance) merged with the order lifecycle (a quote
+     * parked, an approval, an arrival), newest-first. The *spend* of an order is the
+     * `order_placed` money row (it carries the balance); the order's own `ordered_at` stamp is
+     * deliberately not re-emitted so the spend isn't double-listed. Title-hiding by design.
+     */
+    activity: (limit = 100): LedgerActivityEvent[] => {
+      // Bound both sources to `limit` before the in-memory merge: the newest `limit` merged
+      // events can only come from the newest `limit` rows of each source, so the full history
+      // never needs loading (an order yields ≤3 events, a ledger row exactly 1).
+      const events: LedgerActivityEvent[] = [];
+      for (const row of this.ledger.list(limit)) {
+        events.push({
+          kind: row.entry_type,
+          at: row.created_at,
+          amountPence: row.amount_pence,
+          balanceAfterPence: row.balance_after_pence,
+          source: undefined,
+          orderId: row.order_id ?? undefined,
+          note: row.note ?? undefined,
+        });
+      }
+      for (const order of this.orders.all(limit)) {
+        events.push({ kind: "quote", at: order.created_at, source: order.source, orderId: order.id });
+        if (order.approved_at) {
+          events.push({ kind: "approved", at: order.approved_at, source: order.source, orderId: order.id });
+        }
+        if (order.arrived_at) {
+          events.push({ kind: "arrived", at: order.arrived_at, source: order.source, orderId: order.id });
+        }
+      }
+      // Newest-first; id is the deterministic tiebreak when timestamps collide (same-clock tests).
+      events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : (b.orderId ?? 0) - (a.orderId ?? 0)));
+      return events.slice(0, limit);
+    },
   };
 
   // ── config (typed key/value) ────────────────────────────────────────────────
@@ -413,6 +502,16 @@ export interface CollectionInput {
   styles?: string[];
   date_added?: string | null;
   synced_at?: string;
+}
+
+/** One Splurge target derived from the Rejected log: an album + its highest recorded quote. */
+export interface SplurgeWishlistRow {
+  album_key: string;
+  artist: string;
+  title: string;
+  /** The Lane the record was originally rejected from, if recorded — carried to the Reveal. */
+  lane: Lane | null;
+  quoted_price_pence: number;
 }
 
 export interface RejectedInput {
