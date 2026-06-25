@@ -15,7 +15,7 @@ import type { BrainCandidate, BuyAdapter, PriceListing, PricingAdapter } from "@
 import { makeTempStore } from "@/store/test-helpers";
 import type { Store } from "@/store/store";
 import { runGapFill } from "./run";
-import { approveOrder, markArrived, type ApproveDeps } from "./lifecycle";
+import { approveOrder, declineOrder, markArrived, type ApproveDeps } from "./lifecycle";
 
 function avail(source: "discogs" | "amazon", pence: number, url: string): PriceListing {
   return { source, listingUrl: url, landedPricePence: pence, available: true };
@@ -319,6 +319,56 @@ describe("order lifecycle", () => {
       const again = await approveOrder(store, deps, orderId);
       expect(again.outcome).toBe("not_proposed");
       expect(buy.paid).toHaveLength(1); // not driven a second time
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("declines a PROPOSED order → DECLINED + Rejected log, no money moved", async () => {
+    const { store, cleanup } = makeTempStore();
+    try {
+      fund(store, 5000);
+      const { deps, buy } = makeDeps([JIS], {
+        "Alice Coltrane::Journey in Satchidananda": [avail("discogs", 2650, JIS_URL)],
+      });
+      const prep = await runGapFill(store, deps, "scheduled");
+      const orderId = prep!.order!.id;
+
+      const result = declineOrder(store, orderId);
+      expect(result.outcome).toBe("declined");
+      expect(store.orders.get(orderId)!.status).toBe("DECLINED");
+
+      // Goes to the Rejected log so it isn't re-suggested next Run (CONTEXT.md → Rejected log).
+      const rejected = store.rejected.all();
+      expect(
+        rejected.some((r) => r.title === "Journey in Satchidananda" && r.reason === "declined"),
+      ).toBe(true);
+
+      // No money moved: no spend recorded, balance untouched, the Hands never driven.
+      expect(store.ledger.list().some((e) => e.entry_type === "order_placed")).toBe(false);
+      expect(store.ledger.balance()).toBe(5000);
+      expect(buy.prepared).toHaveLength(0);
+      expect(buy.paid).toHaveLength(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("guards: declining an order that is not PROPOSED does nothing", async () => {
+    const { store, cleanup } = makeTempStore();
+    try {
+      fund(store, 5000);
+      const { deps } = makeDeps([JIS], {
+        "Alice Coltrane::Journey in Satchidananda": [avail("discogs", 2650, JIS_URL)],
+      });
+      const prep = await runGapFill(store, deps, "scheduled");
+      const orderId = prep!.order!.id;
+      await approveOrder(store, deps, orderId); // → ORDERED
+
+      const result = declineOrder(store, orderId);
+      expect(result.outcome).toBe("not_proposed");
+      expect(store.orders.get(orderId)!.status).toBe("ORDERED"); // unchanged
+      expect(store.rejected.all().some((r) => r.reason === "declined")).toBe(false);
     } finally {
       cleanup();
     }

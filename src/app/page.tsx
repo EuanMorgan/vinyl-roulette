@@ -1,7 +1,13 @@
 import { getStore } from "@/lib/store-instance";
 import { formatGBP } from "@/store/money";
 import type { LedgerActivityEvent, TasteRow } from "@/store/types";
-import { addNoteAction, clearRatingAction, setRatingAction } from "./actions";
+import {
+  addNoteAction,
+  approveOrderAction,
+  clearRatingAction,
+  declineOrderAction,
+  setRatingAction,
+} from "./actions";
 
 // The spine changes outside the request lifecycle (the agent writes to it), so never
 // cache this page — always read the live file.
@@ -58,6 +64,29 @@ export default function Home() {
                   <span className="capitalize text-neutral-200">{order.source}</span>. The
                   title stays a secret until it arrives.
                 </p>
+                {/* Approve drives the real Chrome buy to ORDERED (Euan clears any 2FA in the
+                    browser); Decline vetoes the spend with no money moved (→ Rejected log).
+                    Neither button — like everything here — ever reveals the title. */}
+                <div className="mt-3 flex gap-2">
+                  <form action={approveOrderAction}>
+                    <input type="hidden" name="order_id" value={order.id} />
+                    <button
+                      type="submit"
+                      className="rounded-md border border-amber-700 bg-amber-900/40 px-3 py-1.5 text-sm font-medium text-amber-100 hover:bg-amber-900/70"
+                    >
+                      Approve {formatGBP(order.quoted_price_pence)}
+                    </button>
+                  </form>
+                  <form action={declineOrderAction}>
+                    <input type="hidden" name="order_id" value={order.id} />
+                    <button
+                      type="submit"
+                      className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                    >
+                      Decline
+                    </button>
+                  </form>
+                </div>
               </li>
             ))}
           </ul>
