@@ -2,28 +2,28 @@
 .SYNOPSIS
   Register (or remove) the Windows Task Scheduler jobs that fire the monthly Vinyl Roulette Run
   (issue #11 / ADR-0001). Local-only by design: the Run executes in Euan's logged-in session so the
-  buy step reuses his authenticated browser/PayPal sessions — no VPS, no fresh-login wall.
+  buy step reuses his authenticated browser/PayPal sessions - no VPS, no fresh-login wall.
 
 .DESCRIPTION
   Creates TWO tasks, both running scripts/run-agent.ps1:
 
-    * VinylRoulette-MonthlyRun  — a MONTHLY calendar trigger (default: the 1st at 09:00). The
+    * VinylRoulette-MonthlyRun  - a MONTHLY calendar trigger (default: the 1st at 09:00). The
       cadence. Action: `-Trigger scheduled` (NOT --if-due) so the monthly fire always runs.
       StartWhenAvailable=true means a start missed because the machine was off reruns as soon as
-      the machine is available again — "a missed monthly trigger runs at next boot".
+      the machine is available again - "a missed monthly trigger runs at next boot".
 
-    * VinylRoulette-Catchup     — an AT-LOGON trigger (delayed 3 min). The belt-and-suspenders
+    * VinylRoulette-Catchup     - an AT-LOGON trigger (delayed 3 min). The belt-and-suspenders
       catch-up. Action: `-Trigger scheduled -IfDue`, so run.ts's `monthlyRunDue` guard fires it
       only when a month is genuinely overdue and skips it on every ordinary logon. Gating the
       *catch-up* (never the monthly cadence) is deliberate: a guard on the monthly trigger could
-      suppress a legitimate fire when the prior Run was itself a late catch-up — the exact
+      suppress a legitimate fire when the prior Run was itself a late catch-up - the exact
       silently-skipped month the spec forbids.
 
   Both run in Euan's interactive session (LogonType InteractiveToken). ExecutionTimeLimit is capped
   at 15 minutes to keep each Run inside the OAuth headless window (ADR-0001: OAuth tokens aren't
   auto-refreshed in long headless runs).
 
-  NOTE: Pausing is the control surface in issue #12 — it will disable these tasks (and set the
+  NOTE: Pausing is the control surface in issue #12 - it will disable these tasks (and set the
   SQLite flag). This script only registers/removes them.
 
 .PARAMETER Unregister
@@ -118,7 +118,9 @@ $triggersXml
 }
 
 # --- Monthly cadence task -------------------------------------------------------------------------
-$startBoundary = "2026-01-${DayOfMonth:D2}T${Time}:00"
+# NB: `$("{0:D2}" -f $DayOfMonth)`, not `${DayOfMonth:D2}` - the latter is the ${drive:path}
+# form, not a .NET format specifier, and silently drops the day (yields an invalid 2026-01-T...).
+$startBoundary = "2026-01-$("{0:D2}" -f $DayOfMonth)T${Time}:00"
 $months = (1..12 | ForEach-Object {
     "          <$([System.Globalization.CultureInfo]::InvariantCulture.DateTimeFormat.GetMonthName($_))/>"
   }) -join "`r`n"

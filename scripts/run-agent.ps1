@@ -3,14 +3,14 @@
   Fire one Vinyl Roulette Run (issue #11). This is the wrapper the Windows Task Scheduler job
   invokes, and it doubles as a hand-runnable launcher. It mirrors `agentInvocation` in
   src/agent/launch.ts: the default entrypoint is `npm run agent:run`, overridable with the
-  VINYL_AGENT_CMD env var for the future `claude -p` Brain — and `--bare` is never added
+  VINYL_AGENT_CMD env var for the future `claude -p` Brain - and `--bare` is never added
   (ADR-0001: --bare forces a metered API key instead of the CLAUDE_CODE_OAUTH_TOKEN subscription).
 
 .DESCRIPTION
   Loads .env from the repo root so CLAUDE_CODE_OAUTH_TOKEN (and the rest) are present in the Run's
   environment, then runs the agent. Runs in Euan's logged-in session, so the buy step can reuse his
   authenticated Chrome/Amazon/Discogs/PayPal sessions (ADR-0003, local only). Kept short by design
-  — the auto-prep decide -> price -> cart Run fits inside the ~10-15 min OAuth headless window.
+  - the auto-prep decide -> price -> cart Run fits inside the ~10-15 min OAuth headless window.
 
 .PARAMETER Trigger
   Tags the Run row: 'scheduled' (the monthly job) or 'manual' (a one-off). Default 'scheduled'.
