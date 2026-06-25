@@ -325,9 +325,11 @@ export class Store {
     },
     get: (id: number): OrderRow | undefined =>
       this.db.prepare("SELECT * FROM orders WHERE id = ?").get(id) as OrderRow | undefined,
-    /** Every order, newest-first — used by the spend-ledger activity timeline. */
-    all: (): OrderRow[] =>
-      this.db.prepare("SELECT * FROM orders ORDER BY id DESC").all() as OrderRow[],
+    /** Orders newest-first, optionally bounded — used by the spend-ledger activity timeline. */
+    all: (limit?: number): OrderRow[] =>
+      limit === undefined
+        ? (this.db.prepare("SELECT * FROM orders ORDER BY id DESC").all() as OrderRow[])
+        : (this.db.prepare("SELECT * FROM orders ORDER BY id DESC LIMIT ?").all(limit) as OrderRow[]),
     listByStatus: (status: OrderStatus): OrderRow[] =>
       this.db
         .prepare("SELECT * FROM orders WHERE status = ? ORDER BY id DESC")
@@ -423,8 +425,11 @@ export class Store {
      * deliberately not re-emitted so the spend isn't double-listed. Title-hiding by design.
      */
     activity: (limit = 100): LedgerActivityEvent[] => {
+      // Bound both sources to `limit` before the in-memory merge: the newest `limit` merged
+      // events can only come from the newest `limit` rows of each source, so the full history
+      // never needs loading (an order yields ≤3 events, a ledger row exactly 1).
       const events: LedgerActivityEvent[] = [];
-      for (const row of this.ledger.list(500)) {
+      for (const row of this.ledger.list(limit)) {
         events.push({
           kind: row.entry_type,
           at: row.created_at,
@@ -435,7 +440,7 @@ export class Store {
           note: row.note ?? undefined,
         });
       }
-      for (const order of this.orders.all()) {
+      for (const order of this.orders.all(limit)) {
         events.push({ kind: "quote", at: order.created_at, source: order.source, orderId: order.id });
         if (order.approved_at) {
           events.push({ kind: "approved", at: order.approved_at, source: order.source, orderId: order.id });
