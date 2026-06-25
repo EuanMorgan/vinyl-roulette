@@ -62,8 +62,10 @@ Runs are capped at 15 minutes to stay inside the OAuth headless window.
   Pro/Max subscription). `run-agent.ps1` loads it from `.env`; `--bare` is never passed (it would
   force a metered API key — ADR-0001). The token is regenerated yearly with `claude setup-token`.
 
-> The in-context Brain that `claude -p` drives is a separate slice; until it ships the job runs the
-> Node entrypoint (`npm run agent:run`). Swap it in with one line: set `VINYL_AGENT_CMD` in `.env`.
+> The in-context Brain ships: the Node entrypoint (`npm run agent:run`) builds the real
+> `ClaudeBrainAdapter`, which runs `claude -p` as a subprocess to propose each month's candidates
+> (gated on `CLAUDE_CODE_OAUTH_TOKEN`). `VINYL_AGENT_CMD` remains an escape hatch to point the Run
+> at an alternate agent command, but is no longer required.
 
 ## Configuration
 

@@ -8,10 +8,10 @@
  * Quote (a quote, not a held cart — ADR-0003). It is pure-ish: all music/network reasoning
  * is behind the injected Brain + pricing adapters, so it's exercised with fakes in tests.
  *
- * Real cross-source pricing (#6) now ships as `HttpPricingAdapter` (`pricingAdapterFromEnv`);
- * the real Brain (Claude in-context) is still a separate slice. Until the Brain lands, `main()`
- * runs with placeholder adapters behind `VINYL_DEMO=1` so a developer can see an end-to-end
- * PROPOSED Quote in the UI without fabricating picks on the default path.
+ * Both seams now ship for real: cross-source pricing (#6) as `HttpPricingAdapter`
+ * (`pricingAdapterFromEnv`) and the Brain (Claude in-context, ADR-0001) as `ClaudeBrainAdapter`
+ * (`brainAdapterFromEnv`). `main()` runs them live on the default path (gated on the OAuth token);
+ * `VINYL_DEMO=1` still swaps in canned placeholder adapters for a no-network UI smoke test.
  *
  * Scheduling (issue #11): Windows Task Scheduler fires this via two jobs (scripts/register-task.ps1)
  * — a monthly cadence trigger that runs unconditionally (StartWhenAvailable reruns a start missed
@@ -31,6 +31,8 @@ import type {
   PricingAdapter,
 } from "@/adapters/types";
 import { FakeBrainAdapter, FakePricingAdapter } from "@/adapters/fakes";
+import { brainAdapterFromEnv } from "@/adapters/brain";
+import { pricingAdapterFromEnv } from "@/adapters/pricing";
 import { notificationAdapterFromEnv } from "@/adapters/notify";
 import { openDb, resolveDbPath } from "@/store/db";
 import { Store } from "@/store/store";
@@ -346,6 +348,32 @@ function demoDeps(): GapFillDeps {
   return { brain, pricing, seed: 1, notifier: notificationAdapterFromEnv() };
 }
 
+/**
+ * The live Run dependencies (ADR-0001): the real Claude Brain, real cross-source pricing (#6), and
+ * the platform notifier — all built from env. The seed varies per Run (wall-clock) so the chaos-dial
+ * lane draw and the occasional Splurge roll differ month to month; non-determinism is the point here.
+ */
+function liveDeps(): GapFillDeps {
+  return {
+    brain: brainAdapterFromEnv(),
+    pricing: pricingAdapterFromEnv(),
+    seed: Date.now() >>> 0,
+    notifier: notificationAdapterFromEnv(),
+  };
+}
+
+/** Report a Run's outcome to stdout — the title stays hidden (price + source only). */
+function logOutcome(outcome: MonthlyOutcome | null): void {
+  if (outcome?.order) {
+    console.log(
+      `Run #${outcome.runId}: PROPOSED a pick from ${outcome.order.source} at ` +
+        `${formatGBP(outcome.order.quoted_price_pence)} (title hidden). Open the UI to approve.`,
+    );
+  } else if (outcome) {
+    console.log(`Run #${outcome.runId}: nothing affordable (${outcome.rejected} rejected).`);
+  }
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const trigger = parseTrigger(argv);
@@ -373,28 +401,27 @@ async function main(): Promise<void> {
     }
 
     if (process.env.VINYL_DEMO !== "1") {
-      // Default path: real pricing (#6) ships, but the real Brain (Claude in-context) isn't
-      // wired yet, so there's nothing to price. Record the Run honestly rather than fabricating.
-      const run = store.runs.create(trigger);
-      store.runs.finish(
-        run.id,
-        "finished",
-        "Real Brain not yet wired (pricing #6 shipped). Re-run with VINYL_DEMO=1 for a demo pick.",
-      );
-      console.log(`Run #${run.id} (${trigger}) recorded — set VINYL_DEMO=1 to see a demo PROPOSED quote.`);
+      // Default (live) path: the real Brain (Claude in-context, ADR-0001) reasons over the taste
+      // context and real pricing (#6) finds the cheaper source. The Brain authenticates via the
+      // Pro/Max subscription token; without it a headless `claude -p` can't run, so record the Run
+      // honestly rather than dropping into an interactive login.
+      if (!process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()) {
+        const run = store.runs.create(trigger);
+        store.runs.finish(
+          run.id,
+          "finished",
+          "Brain not run: CLAUDE_CODE_OAUTH_TOKEN unset. Run `claude setup-token` and set it in .env (ADR-0001).",
+        );
+        console.log(`Run #${run.id} (${trigger}) recorded — set CLAUDE_CODE_OAUTH_TOKEN to enable the Brain.`);
+        return;
+      }
+      const outcome = await runMonthly(store, liveDeps(), trigger);
+      logOutcome(outcome);
       return;
     }
 
     // runMonthly accrues the monthly cap itself, so the war chest funds the demo pick.
-    const outcome = await runMonthly(store, demoDeps(), trigger);
-    if (outcome?.order) {
-      console.log(
-        `Run #${outcome.runId}: PROPOSED a pick from ${outcome.order.source} at ` +
-          `${formatGBP(outcome.order.quoted_price_pence)} (title hidden). Open the UI to approve.`,
-      );
-    } else if (outcome) {
-      console.log(`Run #${outcome.runId}: nothing affordable (${outcome.rejected} rejected).`);
-    }
+    logOutcome(await runMonthly(store, demoDeps(), trigger));
   } finally {
     db.close();
   }
