@@ -1,8 +1,9 @@
 import { getStore } from "@/lib/store-instance";
 import { buildReveal, type RevealView } from "@/agent/reveal";
+import { cancelSurfaceFor } from "@/agent/cancel";
 import { discogsAdapterFromEnv } from "@/adapters/discogs";
 import { formatGBP } from "@/store/money";
-import type { LedgerActivityEvent, TasteRow } from "@/store/types";
+import type { LedgerActivityEvent, OrderRow, TasteRow } from "@/store/types";
 import {
   addNoteAction,
   approveOrderAction,
@@ -11,6 +12,7 @@ import {
   logArrivalAction,
   markArrivedAction,
   runNowAction,
+  setPausedAction,
   setRatingAction,
 } from "./actions";
 
@@ -49,7 +51,7 @@ export default async function Home() {
         <Stat label="War-chest balance" value={formatGBP(balancePence)} />
         <Stat label="Monthly cap" value={formatGBP(config.monthlyCapPence)} />
         <Stat label="Per-purchase ceiling" value={formatGBP(config.perPurchaseCeilingPence)} />
-        <Stat label="Status" value={config.paused ? "Paused" : "Active"} />
+        <PauseControl paused={config.paused} />
       </section>
 
       {proposed.length > 0 && (
@@ -140,6 +142,7 @@ export default async function Home() {
                     {monthLabel()}&apos;s record arrived
                   </button>
                 </form>
+                <CancelSurface order={order} />
               </li>
             ))}
           </ul>
@@ -163,8 +166,8 @@ export default async function Home() {
         <h2 className="mb-3 flex items-baseline justify-between text-sm font-medium uppercase tracking-wide text-neutral-400">
           <span>Runs</span>
           {/* "Run now" fires the same agent entrypoint the Windows scheduler runs (issue #11),
-              just on demand. The Run is spawned detached — refresh to see its row. (Pausing, which
-              would also gate this, is the control surface in issue #12.) */}
+              just on demand. The Run is spawned detached — refresh to see its row. While Paused the
+              Run short-circuits before doing anything (issue #12), so this is a no-op until resumed. */}
           <form action={runNowAction}>
             <button
               type="submit"
@@ -580,5 +583,61 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className="text-xs uppercase tracking-wide text-neutral-500">{label}</div>
       <div className="mt-1 text-lg font-semibold">{value}</div>
     </div>
+  );
+}
+
+/**
+ * The global Pause toggle (issue #12 / CONTEXT.md → Kill switch). Pause stops *all* future Runs:
+ * the action sets the SQLite flag every Run path checks AND disables the Windows scheduled jobs.
+ * The button submits the *desired* next state (the opposite of the current one). Posts straight to
+ * a server action, so it works without client-side JS.
+ */
+function PauseControl({ paused }: { paused: boolean }) {
+  return (
+    <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-3">
+      <div className="text-xs uppercase tracking-wide text-neutral-500">Status</div>
+      <div className="mt-1 flex items-center justify-between gap-2">
+        <span className={`text-lg font-semibold ${paused ? "text-amber-300" : ""}`}>
+          {paused ? "Paused" : "Active"}
+        </span>
+        <form action={setPausedAction}>
+          <input type="hidden" name="paused" value={paused ? "false" : "true"} />
+          <button
+            type="submit"
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+              paused
+                ? "border-emerald-700 bg-emerald-900/30 text-emerald-100 hover:bg-emerald-900/60"
+                : "border-amber-700 bg-amber-900/30 text-amber-100 hover:bg-amber-900/60"
+            }`}
+          >
+            {paused ? "Resume" : "Pause"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The no-auto-cancel surface (issue #12 / CONTEXT.md → Kill switch). The app NEVER auto-cancels a
+ * placed order — a half-successful bot return is worse than none. If Euan regrets a buy, all the
+ * app does is point him at the order so he can cancel it himself. Title-safe by design: the link
+ * is the account-level order page, never the listing, so it can't spoil the still-hidden record.
+ */
+function CancelSurface({ order }: { order: OrderRow }) {
+  const surface = cancelSurfaceFor(order);
+  return (
+    <p className="mt-3 border-t border-neutral-800 pt-2 text-xs text-neutral-500">
+      Changed your mind? Vinyl Roulette won&apos;t cancel an order for you — cancel it yourself on{" "}
+      <a
+        href={surface.manageOrdersUrl}
+        target="_blank"
+        rel="noreferrer"
+        className="capitalize text-neutral-300 underline underline-offset-2 hover:text-neutral-100"
+      >
+        {surface.source}
+      </a>
+      .
+    </p>
   );
 }
