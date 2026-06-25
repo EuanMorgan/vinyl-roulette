@@ -13,10 +13,12 @@
  * runs with placeholder adapters behind `VINYL_DEMO=1` so a developer can see an end-to-end
  * PROPOSED Quote in the UI without fabricating picks on the default path.
  *
- * Scheduling (issue #11): Windows Task Scheduler fires this monthly *and* at boot, both with
- * `--if-due` — the monthly trigger runs the Run, the boot trigger only runs it when a month was
- * missed (the machine was off), so no month is silently skipped. `--if-due` gates on the last
- * *scheduled* Run via `monthlyRunDue`; without the flag (a manual "Run now") the Run always fires.
+ * Scheduling (issue #11): Windows Task Scheduler fires this via two jobs (scripts/register-task.ps1)
+ * — a monthly cadence trigger that runs unconditionally (StartWhenAvailable reruns a start missed
+ * because the machine was off, so no month is silently skipped), and an at-logon catch-up that
+ * passes `--if-due` so it only runs when a month is genuinely overdue. `--if-due` gates on the last
+ * *scheduled* Run via `monthlyRunDue`; without the flag (the monthly job, or a manual "Run now")
+ * the Run always fires.
  *
  * Usage: `npm run agent:run [-- --trigger scheduled] [--if-due]`  (set VINYL_DEMO=1 for a demo pick)
  */
@@ -353,9 +355,9 @@ async function main(): Promise<void> {
   try {
     const store = new Store(db);
 
-    // Catch-up guard (issue #11): the monthly + AtStartup triggers both pass `--if-due`, so a
-    // boot the day after a Run is a no-op while a boot after a month-off catches the missed beat.
-    // No Run row is written when skipped — the period isn't owed, so nothing happened.
+    // Catch-up guard (issue #11): only the at-logon catch-up passes `--if-due`, so a logon the day
+    // after a Run is a no-op while a logon after a month-off catches the missed beat. The monthly
+    // cadence job runs without this flag. No Run row is written when skipped — nothing was owed.
     if (ifDue && !monthlyRunDue(store.runs.lastScheduledAt(), new Date())) {
       console.log("Monthly Run already done for this period — skipping (--if-due).");
       return;

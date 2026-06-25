@@ -163,15 +163,14 @@ export default async function Home() {
         <h2 className="mb-3 flex items-baseline justify-between text-sm font-medium uppercase tracking-wide text-neutral-400">
           <span>Runs</span>
           {/* "Run now" fires the same agent entrypoint the Windows scheduler runs (issue #11),
-              just on demand. Disabled while Paused so the one control surface that stops future
-              buying also stops a manual one. The Run is spawned detached — refresh to see its row. */}
+              just on demand. The Run is spawned detached — refresh to see its row. (Pausing, which
+              would also gate this, is the control surface in issue #12.) */}
           <form action={runNowAction}>
             <button
               type="submit"
-              disabled={config.paused}
-              className="rounded-md border border-neutral-700 px-2.5 py-1 text-xs font-medium normal-case text-neutral-300 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-md border border-neutral-700 px-2.5 py-1 text-xs font-medium normal-case text-neutral-300 hover:bg-neutral-800"
             >
-              {config.paused ? "Paused" : "Run now"}
+              Run now
             </button>
           </form>
         </h2>

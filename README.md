@@ -44,12 +44,17 @@ pwsh -File scripts/register-task.ps1 -Time 08:30 -DayOfMonth 2
 pwsh -File scripts/register-task.ps1 -Unregister
 ```
 
-It creates one task with two triggers, both running `scripts/run-agent.ps1 -Trigger scheduled
--IfDue`: a **monthly** trigger (the cadence) and an **at-logon** trigger (the catch-up). A month
-the machine was off is not silently skipped — `StartWhenAvailable` reruns the missed monthly start
-once the machine is back, and the at-logon trigger re-checks on every sign-in. Both are gated by
-the entrypoint's `--if-due` guard (`monthlyRunDue`), so a catch-up runs the owed period at most
-once — never a double-buy. Runs are capped at 15 minutes to stay inside the OAuth headless window.
+It creates two tasks, both running `scripts/run-agent.ps1`:
+
+- **`VinylRoulette-MonthlyRun`** — a monthly trigger (the cadence), run *unconditionally*
+  (`-Trigger scheduled`). `StartWhenAvailable` reruns a start the machine was off for as soon as
+  it's back, so a missed month runs at next boot — never silently skipped.
+- **`VinylRoulette-Catchup`** — an at-logon trigger, run with the `--if-due` guard
+  (`monthlyRunDue`), so it only fires when a month is genuinely overdue and is a no-op on ordinary
+  sign-ins. Gating the catch-up but not the cadence is deliberate: a guard on the monthly fire
+  could suppress a legitimate month when the prior Run was itself a late catch-up.
+
+Runs are capped at 15 minutes to stay inside the OAuth headless window.
 
 - **Run now** — the button in the UI fires the same entrypoint on demand (`manual` trigger, no
   catch-up gate), spawned detached so it writes to SQLite even with the page closed.

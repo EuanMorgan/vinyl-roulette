@@ -6,9 +6,11 @@
  *
  * Today the entrypoint is the Node script (`npm run agent:run`); the in-context Brain that
  * `claude -p` will drive is a separate, not-yet-shipped slice (see run.ts). The swap is one line
- * of local config: set VINYL_AGENT_CMD to the real `claude -p "<prompt>"`. Per ADR-0001 that
- * invocation authenticates via the CLAUDE_CODE_OAUTH_TOKEN env var (Euan's Pro/Max subscription)
- * and must never pass `--bare` (which forces a metered API key) — this builder never emits it.
+ * of local config: set VINYL_AGENT_CMD to the real Brain invocation (e.g. `claude -p prompt.md`).
+ * The override is split on whitespace, so point `-p` at a prompt *file* rather than an inline
+ * quoted string. Per ADR-0001 that invocation authenticates via the CLAUDE_CODE_OAUTH_TOKEN env var
+ * (Euan's Pro/Max subscription) and must never pass `--bare` (which forces a metered API key) —
+ * this builder never emits it.
  */
 import type { RunTrigger } from "@/store/types";
 
