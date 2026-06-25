@@ -190,8 +190,9 @@ export interface BrainCandidate {
 /**
  * The Brain seam: proposes ranked candidate picks across the three Lanes. The *real*
  * implementation is Claude reasoning in-context each Run (ADR-0001) — there is no trained
- * recommender or gap-detection algorithm. This slice (#5) consumes a fake at this boundary
- * so the picker is a deterministic pure function; the real Brain lands in a later slice.
+ * recommender or gap-detection algorithm. Tests consume a fake at this boundary so the picker
+ * is a deterministic pure function; the real `ClaudeBrainAdapter` (`brain.ts`, issue #19) drives
+ * `claude -p` in production.
  *
  * Candidates are returned best-first *within* each Lane; the picker applies the chaos-dial
  * weighting + seed to decide which Lane (and thus which candidate) actually wins.

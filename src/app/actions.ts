@@ -10,6 +10,7 @@ import { agentInvocation } from "@/agent/launch";
 import { scheduleControlInvocation } from "@/agent/scheduler-control";
 import { buyAdapterFromEnv } from "@/adapters/buy";
 import { pricingAdapterFromEnv } from "@/adapters/pricing";
+import { brainAdapterFromEnv } from "@/adapters/brain";
 import { notificationAdapterFromEnv } from "@/adapters/notify";
 import { discogsAdapterFromEnv } from "@/adapters/discogs";
 import type { BrainAdapter } from "@/adapters/types";
@@ -29,11 +30,16 @@ function orderIdFrom(formData: FormData): number | null {
 }
 
 /**
- * The real Brain (Claude reasoning in-context) is a later slice; until it lands, a STALE re-pick
- * at approval has nothing to propose. This no-op Brain keeps the dependency honest — a stale
- * order is still parked STALE and logged to Rejected, it just can't be re-proposed immediately.
+ * The Brain for an approval-time STALE re-pick (issue #19 wired the real one). It's the real
+ * `claude -p` Brain when the OAuth token is configured, else a no-op so a stale order is still
+ * parked STALE and logged to Rejected — it just can't be re-proposed without auth. Gating here
+ * mirrors the scheduled Run (`run.ts`): no token → no Brain call, never an interactive login.
  */
-const noopBrain: BrainAdapter = { async propose() { return []; } };
+function approveBrain(): BrainAdapter {
+  return process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()
+    ? brainAdapterFromEnv()
+    : { async propose() { return []; } };
+}
 
 /**
  * Assemble the approval-time dependencies from env: real cross-source pricing for the live
@@ -45,7 +51,7 @@ function approveDeps(): ApproveDeps | null {
   const buy = buyAdapterFromEnv();
   if (!buy) return null;
   return {
-    brain: noopBrain,
+    brain: approveBrain(),
     pricing: pricingAdapterFromEnv(),
     buy,
     seed: Date.now(),
