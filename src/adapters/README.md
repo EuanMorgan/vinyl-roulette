@@ -42,18 +42,21 @@ pricing.setDriftedPrice("https://amazon/y", 2900); // price drifted +£4 over qu
 | `DiscogsAdapter`      | `HttpDiscogsAdapter` (`discogs.ts`)       | Shipped (issue #3)                      |
 | `PricingAdapter`      | `HttpPricingAdapter` (`pricing.ts`)       | Shipped (issue #6)                      |
 | `NotificationAdapter` | `WindowsToastNotificationAdapter` (`notify.ts`) | Shipped (issue #7)                |
-| `BuyAdapter`          | —                                         | Lifecycle drives a fake (#7); real Playwright in #9 |
+| `BuyAdapter`          | `PlaywrightBuyAdapter` (`buy.ts`)         | Shipped (issue #9)                      |
 
 ### Discogs (`HttpDiscogsAdapter`)
 
 Reads Euan's collection from the Discogs API (`/users/{username}/collection/folders/0/releases`),
 paginated, and maps each owned copy to a `DiscogsCollectionItem` (artist, title, year,
-release/instance ids, genres, styles).
+release/instance ids, genres, styles). For the arrival Reveal (issue #10) it also **searches**
+releases (`/database/search`) for a best-guess match and **writes a record back** to the
+collection (`POST /users/{username}/collection/folders/1/releases/{id}`), returning the new
+instance id.
 
 - **Auth / OAuth scope.** Single-user local app (ADR-0001), so it uses a Discogs
   **personal access token** instead of the 3-legged OAuth flow. The token is scoped to the
-  owner's own account — exactly what listing _your_ collection needs, and **no write scope**
-  (collection write-back on arrival is issue #10). Sent as `Authorization: Discogs token=…`.
+  owner's own account — exactly what both reading _your_ collection and writing back to it
+  need (a personal token carries write scope). Sent as `Authorization: Discogs token=…`.
   Config via `DISCOGS_USERNAME` / `DISCOGS_TOKEN` (see `.env.example`); build with
   `discogsAdapterFromEnv()`, which returns `null` when unset so callers degrade gracefully.
 - **Rate limits.** Discogs allows ~60 authenticated requests/min and reports budget in
@@ -105,6 +108,31 @@ surprise survives until the arrival Reveal.
 - **Config.** `notificationAdapterFromEnv()` picks the Windows toast on `win32`, else the console
   adapter. Tests inject `FakeNotificationAdapter` and read back `.sent`.
 
-The remaining `BuyAdapter` implementation (the real Playwright finalize + Decline) lands in
-issue #9; issue #7 drives the order lifecycle against `FakeBuyAdapter`. This convention keeps
-every external dependency behind a thin, fakeable seam.
+### Buy (`PlaywrightBuyAdapter`)
+
+The Hands of the two-phase buy (issue #9): real Playwright (`playwright-core`) driving **Euan's
+real Chrome profile** (ADR-0003) so logged-in Amazon/Discogs/PayPal sessions are reused and the
+human is on hand to clear the payment challenge a bot can't. The order lifecycle
+(`approveOrder`) is **unchanged** — it still consumes only the `BuyAdapter` interface from #7.
+
+- **Human-in-the-loop split (do not re-introduce unattended payment).** Both calls run at
+  approval time, fresh (no live cart is held — CONTEXT.md → Quote): `prepare` re-opens the
+  re-validated listing and drives source-specific checkout up to — _not through_ — the payment
+  button and leaves the headed page open; Euan clears any 2FA/PayPal/CVV; `pay` clicks the final
+  control and reads the confirmation back. The open page is held between the two calls.
+- **Shape: an orchestrator over an injectable `BuyBrowser` + per-source `CheckoutFlow`s.**
+  `PlaywrightBuyAdapter` owns no Playwright and no selectors — it opens a page, dispatches to the
+  flow matching the quote's source, holds it across `prepare`→`pay`, and **always closes it**
+  (including on failure) so a crashed buy never leaks a session holding the profile lock.
+- **Brittleness is contained.** The markup-bound selectors live in `DISCOGS_SELECTORS` /
+  `AMAZON_SELECTORS` and the per-source flows — the same stance `pricing.ts` takes with its HTML
+  parsers. The browser is injected (like `pricing.ts`'s `fetch`), so the orchestration and the
+  flows are tested with a fake page (`buy.test.ts`) and never launch Chrome.
+- **Decline** lives next to approval in `lifecycle.ts` (`declineOrder`): a PROPOSED order is
+  vetoed → DECLINED, logged to the Rejected log (reason `declined`), no money moved, no browser.
+- **Config.** `CHROME_USER_DATA_DIR` (Euan's real profile dir) + optional `CHROME_CHANNEL`
+  (defaults to `chrome` — the installed system Chrome, no browser download). Build with
+  `buyAdapterFromEnv()`, which returns `null` when the profile dir is unset so the UI degrades.
+
+Every external dependency now sits behind a thin, fakeable seam — the convention established in
+the walking skeleton (#2) and carried through every slice since.

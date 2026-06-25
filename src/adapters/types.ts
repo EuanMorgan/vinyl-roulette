@@ -27,10 +27,40 @@ export interface DiscogsCollectionItem {
   dateAdded?: string;
 }
 
-/** Reads Euan's Discogs library (and, later, resolves release metadata). */
+/**
+ * One candidate Discogs release from a metadata search — the best-guess shown on the Reveal
+ * for an Amazon-sourced buy (no release id was known at order time), so Euan can confirm or
+ * correct in one tap (issue #10). Returned best-match-first.
+ */
+export interface DiscogsReleaseMatch {
+  releaseId: number;
+  artist: string;
+  title: string;
+  year?: number;
+  /** Format/label/country hint to disambiguate pressings in the confirm UI, when given. */
+  detail?: string;
+  /** Small cover thumbnail URL, when the search provides one. */
+  thumbUrl?: string;
+}
+
+/**
+ * Reads Euan's Discogs library, and — for the arrival Reveal (issue #10) — searches releases
+ * and writes a record back to his collection. The read-sync uses only `fetchCollection`; the
+ * write-back path uses the other two. Tests fake this whole interface (see `fakes.ts`).
+ */
 export interface DiscogsAdapter {
   /** Fetch the full owned collection for the read-sync. */
   fetchCollection(): Promise<DiscogsCollectionItem[]>;
+  /**
+   * Best-guess release search for logging an Amazon-sourced buy whose Discogs release id is
+   * unknown. Returns candidates best-match-first; empty when nothing matches.
+   */
+  searchReleases(query: { artist: string; title: string }): Promise<DiscogsReleaseMatch[]>;
+  /**
+   * Add a release to Euan's Discogs collection (the arrival write-back). Returns the new
+   * collection instance id Discogs assigns the added copy.
+   */
+  addToCollection(releaseId: number): Promise<{ instanceId: number }>;
 }
 
 /** A concrete buyable listing on one source, priced on landed cost (item + shipping). */

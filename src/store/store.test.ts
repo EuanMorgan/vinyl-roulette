@@ -251,6 +251,30 @@ describe("Store", () => {
 
       expect(t.store.orders.listByStatus("ARRIVED").map((o) => o.id)).toContain(order.id);
     });
+
+    it("recordDiscogsLog stamps the arrival write-back (release + instance + time)", () => {
+      const t = makeTempStore();
+      cleanup = t.cleanup;
+      // An Amazon buy: no release id known at order time (the write-back confirms it).
+      const order = t.store.orders.propose({
+        album_key: albumKey("Curtis Mayfield", "Super Fly"),
+        artist: "Curtis Mayfield",
+        title: "Super Fly",
+        lane: "adjacent",
+        intent: "gap_fill",
+        source: "amazon",
+        listing_url: "https://amazon.example/superfly",
+        quoted_price_pence: 2899,
+      });
+      expect(order.discogs_release_id).toBeNull();
+      expect(order.discogs_instance_id).toBeNull();
+      expect(order.discogs_logged_at).toBeNull();
+
+      const logged = t.store.orders.recordDiscogsLog(order.id, 555, 9001);
+      expect(logged.discogs_release_id).toBe(555); // confirmed release patched on
+      expect(logged.discogs_instance_id).toBe(9001); // the "already logged" marker
+      expect(logged.discogs_logged_at).not.toBeNull();
+    });
   });
 
   describe("owned set (collection ∪ purchase ledger)", () => {

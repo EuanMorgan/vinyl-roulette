@@ -135,6 +135,40 @@ export async function approveOrder(
   return { outcome: "ordered", order: ordered };
 }
 
+export type DeclineResult =
+  /** PROPOSED → DECLINED, logged to Rejected, no money moved. */
+  | { outcome: "declined"; order: OrderRow }
+  /** Guard: the order wasn't PROPOSED (already approved, ordered, etc.) — nothing done. */
+  | { outcome: "not_proposed"; order: OrderRow | undefined };
+
+/**
+ * Decline a PROPOSED order before approval (issue #9): the human veto on the spend. No payment
+ * is attempted and no money moves — the order is parked DECLINED and the record goes to the
+ * Rejected log (reason "declined") so it isn't re-suggested next Run (CONTEXT.md → Rejected log).
+ * Synchronous: declining never touches the browser or the network. Idempotent guard — only a
+ * PROPOSED order is declinable, so a double-tap (or declining something already ORDERED) is a
+ * no-op rather than a second Rejected-log row.
+ */
+export function declineOrder(store: Store, orderId: number): DeclineResult {
+  const order = store.orders.get(orderId);
+  if (!order || order.status !== "PROPOSED") {
+    return { outcome: "not_proposed", order };
+  }
+  const declined = store.orders.setStatus(orderId, "DECLINED");
+  store.rejected.add({
+    album_key: order.album_key,
+    artist: order.artist,
+    title: order.title,
+    lane: order.lane,
+    reason: "declined",
+    source: order.source,
+    listing_url: order.listing_url,
+    quoted_price_pence: order.quoted_price_pence,
+    run_id: order.run_id,
+  });
+  return { outcome: "declined", order: declined };
+}
+
 /**
  * Move an ORDERED record to ARRIVED — the transition behind Euan's "[Month]'s record arrived"
  * tap. Thin by design: the Reveal screen + Discogs write-back hang off this in issue #10. Guard

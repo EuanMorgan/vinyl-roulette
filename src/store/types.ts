@@ -88,6 +88,11 @@ export interface OrderRow {
   quoted_price_pence: number;
   final_price_pence: number | null;
   discogs_release_id: number | null;
+  /** Collection instance id Discogs returned when the record was logged on arrival (#10);
+   *  null until logged — its non-null-ness is the "already added to Discogs" marker. */
+  discogs_instance_id: number | null;
+  /** When the record was logged to the Discogs collection (the arrival write-back), or null. */
+  discogs_logged_at: string | null;
   status: OrderStatus;
   created_at: string;
   approved_at: string | null;

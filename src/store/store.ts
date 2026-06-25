@@ -357,6 +357,26 @@ export class Store {
       this.db.prepare(`UPDATE orders SET ${sets.join(", ")} WHERE id = @id`).run(params);
       return this.orders.get(id)!;
     },
+    /**
+     * Record the arrival Discogs write-back (issue #10): stamp the release that was logged
+     * (patched here for an Amazon buy whose release id was unknown at order time) and the
+     * instance id Discogs returned. `discogs_instance_id` becoming non-null is the idempotency
+     * marker the Reveal reads to show "added to Discogs" and to refuse a second add.
+     */
+    recordDiscogsLog: (id: number, releaseId: number, instanceId: number): OrderRow => {
+      const now = this.now();
+      this.db
+        .prepare(
+          `UPDATE orders
+              SET discogs_release_id = @releaseId,
+                  discogs_instance_id = @instanceId,
+                  discogs_logged_at = @now,
+                  updated_at = @now
+            WHERE id = @id`,
+        )
+        .run({ id, releaseId, instanceId, now });
+      return this.orders.get(id)!;
+    },
   };
 
   // ── ledger / balance ───────────────────────────────────────────────────────
