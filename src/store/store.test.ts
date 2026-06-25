@@ -22,6 +22,19 @@ describe("Store", () => {
 
       expect(t.store.runs.list().map((r) => r.id)).toContain(run.id);
     });
+
+    it("lastScheduledAt reports the newest scheduled run's start, ignoring manual runs", () => {
+      const t = makeTempStore(); // fixed clock → deterministic started_at
+      cleanup = t.cleanup;
+      expect(t.store.runs.lastScheduledAt()).toBeNull(); // none yet → catch-up guard sees never-run
+
+      const scheduled = t.store.runs.create("scheduled");
+      expect(t.store.runs.lastScheduledAt()).toBe(scheduled.started_at);
+
+      // A later *manual* run (e.g. "Run now") must not move the monthly clock.
+      t.store.runs.create("manual");
+      expect(t.store.runs.lastScheduledAt()).toBe(scheduled.started_at);
+    });
   });
 
   describe("collection (album-level ownership)", () => {

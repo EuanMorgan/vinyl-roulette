@@ -13,7 +13,12 @@
  * runs with placeholder adapters behind `VINYL_DEMO=1` so a developer can see an end-to-end
  * PROPOSED Quote in the UI without fabricating picks on the default path.
  *
- * Usage: `npm run agent:run [-- --trigger scheduled]`  (set VINYL_DEMO=1 for a demo pick)
+ * Scheduling (issue #11): Windows Task Scheduler fires this monthly *and* at boot, both with
+ * `--if-due` — the monthly trigger runs the Run, the boot trigger only runs it when a month was
+ * missed (the machine was off), so no month is silently skipped. `--if-due` gates on the last
+ * *scheduled* Run via `monthlyRunDue`; without the flag (a manual "Run now") the Run always fires.
+ *
+ * Usage: `npm run agent:run [-- --trigger scheduled] [--if-due]`  (set VINYL_DEMO=1 for a demo pick)
  */
 import { pathToFileURL } from "node:url";
 import type {
@@ -31,6 +36,7 @@ import { formatGBP } from "@/store/money";
 import { albumKey, type ChaosDial, type Config, type OrderRow, type RunRow, type RunTrigger } from "@/store/types";
 import { mulberry32, pickRecord } from "./picker";
 import { pickSplurge } from "./splurge";
+import { monthlyRunDue } from "./schedule";
 
 function parseTrigger(argv: string[]): RunTrigger {
   const i = argv.indexOf("--trigger");
@@ -339,11 +345,21 @@ function demoDeps(): GapFillDeps {
 }
 
 async function main(): Promise<void> {
-  const trigger = parseTrigger(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const trigger = parseTrigger(argv);
+  const ifDue = argv.includes("--if-due");
   const path = resolveDbPath();
   const db = openDb(path);
   try {
     const store = new Store(db);
+
+    // Catch-up guard (issue #11): the monthly + AtStartup triggers both pass `--if-due`, so a
+    // boot the day after a Run is a no-op while a boot after a month-off catches the missed beat.
+    // No Run row is written when skipped — the period isn't owed, so nothing happened.
+    if (ifDue && !monthlyRunDue(store.runs.lastScheduledAt(), new Date())) {
+      console.log("Monthly Run already done for this period — skipping (--if-due).");
+      return;
+    }
 
     if (process.env.VINYL_DEMO !== "1") {
       // Default path: real pricing (#6) ships, but the real Brain (Claude in-context) isn't

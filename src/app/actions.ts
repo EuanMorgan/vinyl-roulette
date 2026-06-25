@@ -1,9 +1,11 @@
 "use server";
 
+import { spawn } from "node:child_process";
 import { revalidatePath } from "next/cache";
 import { getStore } from "@/lib/store-instance";
 import { approveOrder, declineOrder, markArrived, type ApproveDeps } from "@/agent/lifecycle";
 import { logArrivalToDiscogs } from "@/agent/reveal";
+import { agentInvocation } from "@/agent/launch";
 import { buyAdapterFromEnv } from "@/adapters/buy";
 import { pricingAdapterFromEnv } from "@/adapters/pricing";
 import { notificationAdapterFromEnv } from "@/adapters/notify";
@@ -119,6 +121,32 @@ export async function logArrivalAction(formData: FormData): Promise<void> {
     return;
   }
   await logArrivalToDiscogs(getStore(), { discogs }, orderId, releaseIdFrom(formData));
+  revalidatePath("/");
+}
+
+/**
+ * "Run now" (issue #11): fire the agent entrypoint on demand — the same command the Windows Task
+ * Scheduler job runs, the only difference being `manual` trigger and no `--if-due` catch-up gate
+ * (an explicit tap always runs). Spawned detached so the Run is decoupled from the UI: it writes
+ * its results straight to the SQLite spine and outlives this request, exactly as the scheduled Run
+ * does with the UI closed. We don't await it — the new Run row shows up on the next page load.
+ */
+export async function runNowAction(): Promise<void> {
+  const { command, args } = agentInvocation("manual");
+  try {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      // npm is a `.cmd` shim on Windows, which Node can only launch through a shell.
+      shell: process.platform === "win32",
+    });
+    child.on("error", (err) => console.warn("[ui] Run now failed to spawn the agent:", err));
+    child.unref();
+  } catch (err) {
+    // A failed spawn must not 500 the page — surface it in the log and let Euan retry.
+    console.warn("[ui] Run now could not start the agent:", err);
+  }
   revalidatePath("/");
 }
 

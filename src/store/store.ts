@@ -68,6 +68,18 @@ export class Store {
       this.db
         .prepare("SELECT * FROM runs ORDER BY id DESC LIMIT ?")
         .all(limit) as RunRow[],
+    /**
+     * The start time of the most recent *scheduled* Run, or null if none ever ran — the clock the
+     * monthly catch-up guard reads (issue #11, `monthlyRunDue`). Scheduled-only on purpose: a manual
+     * "Run now" (debugging) must not suppress the monthly cadence, and the missed-trigger catch-up
+     * only cares whether the *scheduled* beat happened.
+     */
+    lastScheduledAt: (): string | null => {
+      const row = this.db
+        .prepare("SELECT started_at FROM runs WHERE trigger = 'scheduled' ORDER BY id DESC LIMIT 1")
+        .get() as { started_at: string } | undefined;
+      return row?.started_at ?? null;
+    },
   };
 
   // ── collection ──────────────────────────────────────────────────────────
