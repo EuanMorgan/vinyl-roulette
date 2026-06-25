@@ -1,11 +1,13 @@
 "use server";
 
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { revalidatePath } from "next/cache";
 import { getStore } from "@/lib/store-instance";
 import { approveOrder, declineOrder, markArrived, type ApproveDeps } from "@/agent/lifecycle";
 import { logArrivalToDiscogs } from "@/agent/reveal";
 import { agentInvocation } from "@/agent/launch";
+import { scheduleControlInvocation } from "@/agent/scheduler-control";
 import { buyAdapterFromEnv } from "@/adapters/buy";
 import { pricingAdapterFromEnv } from "@/adapters/pricing";
 import { notificationAdapterFromEnv } from "@/adapters/notify";
@@ -148,6 +150,41 @@ export async function runNowAction(): Promise<void> {
     console.warn("[ui] Run now could not start the agent:", err);
   }
   revalidatePath("/");
+}
+
+/**
+ * Toggle the global Pause (issue #12; CONTEXT.md → Kill switch). Pause is two effects: the
+ * authoritative SQLite flag (every Run path checks `isPaused`), written here synchronously, AND
+ * disabling the Windows scheduled jobs so the OS doesn't even fire while paused. The task toggle
+ * is best-effort defence-in-depth — it's Windows-only and spawned detached, and a failure to
+ * reach the scheduler must never block the flag write (the flag alone already stops every Run).
+ */
+export async function setPausedAction(formData: FormData): Promise<void> {
+  const paused = formData.get("paused") === "true";
+  getStore().config.set({ paused });
+  toggleScheduledTasks(paused);
+  revalidatePath("/");
+}
+
+/**
+ * Enable/disable the scheduled Run jobs to match the Pause flag. Windows-only (the ScheduledTasks
+ * module is); a no-op with a log elsewhere. Spawned detached like "Run now" — a slow or failed
+ * toggle can't 500 the page, and the SQLite flag has already done the load-bearing work.
+ */
+function toggleScheduledTasks(paused: boolean): void {
+  if (process.platform !== "win32") {
+    console.warn("[ui] schedule toggle skipped: scheduled tasks are Windows-only (SQLite flag set).");
+    return;
+  }
+  const scriptPath = join(process.cwd(), "scripts", "set-schedule-enabled.ps1");
+  const { command, args } = scheduleControlInvocation(paused ? "pause" : "resume", { scriptPath });
+  try {
+    const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
+    child.on("error", (err) => console.warn("[ui] could not toggle the scheduled tasks:", err));
+    child.unref();
+  } catch (err) {
+    console.warn("[ui] could not toggle the scheduled tasks:", err);
+  }
 }
 
 /** Set (or change) the album-level rating for any collection record. */

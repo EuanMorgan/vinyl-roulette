@@ -363,6 +363,15 @@ async function main(): Promise<void> {
       return;
     }
 
+    // Pause short-circuit (issue #12). Pausing disables the scheduled tasks, but a Run can still
+    // reach here via "Run now" or a leftover trigger, so the SQLite flag is the authoritative gate
+    // (CONTEXT.md → Kill switch). Bail before any Run row is created so "Pause → no Run fires" holds
+    // on every entrypoint, including the placeholder/demo paths below (runMonthly re-checks too).
+    if (store.config.isPaused()) {
+      console.log("Paused — skipping Run. Resume in the UI to re-enable buying.");
+      return;
+    }
+
     if (process.env.VINYL_DEMO !== "1") {
       // Default path: real pricing (#6) ships, but the real Brain (Claude in-context) isn't
       // wired yet, so there's nothing to price. Record the Run honestly rather than fabricating.

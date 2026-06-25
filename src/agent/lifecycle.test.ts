@@ -389,4 +389,34 @@ describe("order lifecycle", () => {
       cleanup();
     }
   });
+
+  it("never auto-cancels a placed order — ORDERED only ever moves on to ARRIVED", async () => {
+    // The settled safety rule (issue #12 / CONTEXT.md → Kill switch): once payment has cleared the
+    // app NEVER claws the order back. There is no cancel/return transition in the lifecycle at all;
+    // the public moves on a placed order are Decline (a no-op once ORDERED) and Arrive. This pins
+    // that an ORDERED record cannot be sent backwards or cancelled through any of them.
+    const { store, cleanup } = makeTempStore();
+    try {
+      fund(store, 5000);
+      const { deps, buy } = makeDeps([JIS], {
+        "Alice Coltrane::Journey in Satchidananda": [avail("discogs", 2650, JIS_URL)],
+      });
+      const prep = await runGapFill(store, deps, "scheduled");
+      const orderId = prep!.order!.id;
+      await approveOrder(store, deps, orderId); // → ORDERED (payment cleared)
+      expect(store.orders.get(orderId)!.status).toBe("ORDERED");
+
+      // Decline is the only "stop" verb on an order; on a placed one it does nothing (no clawback).
+      expect(declineOrder(store, orderId).outcome).toBe("not_proposed");
+      // Re-approving is likewise inert — no second payment, no status change.
+      expect((await approveOrder(store, deps, orderId)).outcome).toBe("not_proposed");
+      expect(store.orders.get(orderId)!.status).toBe("ORDERED");
+      expect(buy.paid).toHaveLength(1); // paid exactly once, never reversed
+
+      // The only forward move a placed order has is arrival (the Reveal).
+      expect(markArrived(store, orderId)!.status).toBe("ARRIVED");
+    } finally {
+      cleanup();
+    }
+  });
 });

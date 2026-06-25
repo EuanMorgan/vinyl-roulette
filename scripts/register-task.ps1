@@ -23,8 +23,9 @@
   at 15 minutes to keep each Run inside the OAuth headless window (ADR-0001: OAuth tokens aren't
   auto-refreshed in long headless runs).
 
-  NOTE: Pausing is the control surface in issue #12 - it will disable these tasks (and set the
-  SQLite flag). This script only registers/removes them.
+  NOTE: Pausing (issue #12) disables these tasks (and sets the SQLite flag) via
+  scripts/set-schedule-enabled.ps1, driven by the UI's Pause toggle. This script only
+  registers/removes them.
 
 .PARAMETER Unregister
   Remove both tasks instead of creating them.
