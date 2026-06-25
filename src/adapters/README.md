@@ -48,12 +48,15 @@ pricing.setDriftedPrice("https://amazon/y", 2900); // price drifted +£4 over qu
 
 Reads Euan's collection from the Discogs API (`/users/{username}/collection/folders/0/releases`),
 paginated, and maps each owned copy to a `DiscogsCollectionItem` (artist, title, year,
-release/instance ids, genres, styles).
+release/instance ids, genres, styles). For the arrival Reveal (issue #10) it also **searches**
+releases (`/database/search`) for a best-guess match and **writes a record back** to the
+collection (`POST /users/{username}/collection/folders/1/releases/{id}`), returning the new
+instance id.
 
 - **Auth / OAuth scope.** Single-user local app (ADR-0001), so it uses a Discogs
   **personal access token** instead of the 3-legged OAuth flow. The token is scoped to the
-  owner's own account — exactly what listing _your_ collection needs, and **no write scope**
-  (collection write-back on arrival is issue #10). Sent as `Authorization: Discogs token=…`.
+  owner's own account — exactly what both reading _your_ collection and writing back to it
+  need (a personal token carries write scope). Sent as `Authorization: Discogs token=…`.
   Config via `DISCOGS_USERNAME` / `DISCOGS_TOKEN` (see `.env.example`); build with
   `discogsAdapterFromEnv()`, which returns `null` when unset so callers degrade gracefully.
 - **Rate limits.** Discogs allows ~60 authenticated requests/min and reports budget in

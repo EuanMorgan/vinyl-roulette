@@ -139,4 +139,18 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    // The arrival Reveal logs the record to Discogs (issue #10 / CONTEXT "It's here").
+    // discogs_release_id already holds the release we'd add; these two record the *result*
+    // of the write-back: the new collection instance id Discogs hands back, and when it
+    // happened. discogs_instance_id IS NOT NULL is the "already logged" marker that keeps
+    // the one-tap add idempotent (a re-tap never adds a second copy). For an Amazon buy the
+    // release id was unknown at order time, so discogs_release_id is patched to the
+    // confirmed release here too — see orders.recordDiscogsLog.
+    version: "002_order_discogs_log",
+    sql: /* sql */ `
+      ALTER TABLE orders ADD COLUMN discogs_instance_id INTEGER;
+      ALTER TABLE orders ADD COLUMN discogs_logged_at   TEXT;
+    `,
+  },
 ];

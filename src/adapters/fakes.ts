@@ -16,6 +16,7 @@ import type {
   BuyResult,
   DiscogsAdapter,
   DiscogsCollectionItem,
+  DiscogsReleaseMatch,
   NotificationAdapter,
   PriceListing,
   PricingAdapter,
@@ -24,11 +25,41 @@ import type {
 
 export class FakeDiscogsAdapter implements DiscogsAdapter {
   constructor(private items: DiscogsCollectionItem[] = []) {}
+  /** Search results keyed by `${artist}::${title}` (case-insensitive). */
+  private searchTable = new Map<string, DiscogsReleaseMatch[]>();
+  /** Release ids that `addToCollection` should reject (simulate a write failure), by id. */
+  private addFailures = new Set<number>();
+  /** Every release id added to the collection, in order — for assertions. */
+  readonly added: number[] = [];
+  /** Next instance id `addToCollection` will hand back (auto-increments per add). */
+  private nextInstanceId = 9000;
+
+  private key(artist: string, title: string): string {
+    return `${artist}::${title}`.toLowerCase();
+  }
+
   setCollection(items: DiscogsCollectionItem[]): void {
     this.items = items;
   }
+  setSearchResults(artist: string, title: string, matches: DiscogsReleaseMatch[]): void {
+    this.searchTable.set(this.key(artist, title), matches);
+  }
+  failAdd(releaseId: number): void {
+    this.addFailures.add(releaseId);
+  }
+
   async fetchCollection(): Promise<DiscogsCollectionItem[]> {
     return this.items;
+  }
+  async searchReleases(query: { artist: string; title: string }): Promise<DiscogsReleaseMatch[]> {
+    return this.searchTable.get(this.key(query.artist, query.title)) ?? [];
+  }
+  async addToCollection(releaseId: number): Promise<{ instanceId: number }> {
+    if (this.addFailures.has(releaseId)) {
+      throw new Error(`fake Discogs: refusing to add release ${releaseId}`);
+    }
+    this.added.push(releaseId);
+    return { instanceId: this.nextInstanceId++ };
   }
 }
 

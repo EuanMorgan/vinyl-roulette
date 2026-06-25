@@ -2,10 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { getStore } from "@/lib/store-instance";
-import { approveOrder, declineOrder, type ApproveDeps } from "@/agent/lifecycle";
+import { approveOrder, declineOrder, markArrived, type ApproveDeps } from "@/agent/lifecycle";
+import { logArrivalToDiscogs } from "@/agent/reveal";
 import { buyAdapterFromEnv } from "@/adapters/buy";
 import { pricingAdapterFromEnv } from "@/adapters/pricing";
 import { notificationAdapterFromEnv } from "@/adapters/notify";
+import { discogsAdapterFromEnv } from "@/adapters/discogs";
 import type { BrainAdapter } from "@/adapters/types";
 
 /**
@@ -75,6 +77,48 @@ export async function declineOrderAction(formData: FormData): Promise<void> {
   const orderId = orderIdFrom(formData);
   if (orderId === null) return;
   declineOrder(getStore(), orderId);
+  revalidatePath("/");
+}
+
+/**
+ * The arrival tap (issue #10): move an ORDERED record to ARRIVED — the Reveal moment. This is
+ * the first point the title is shown and the record becomes loggable to Discogs; `markArrived`
+ * guards that only a placed order can arrive. The Discogs write-back is a *separate* one-tap step
+ * (`logArrivalAction`) so an Amazon buy can confirm its best-guess release first.
+ */
+export async function markArrivedAction(formData: FormData): Promise<void> {
+  const orderId = orderIdFrom(formData);
+  if (orderId === null) return;
+  // markArrived guards that only an ORDERED record can arrive; revalidate only on a real
+  // transition so a stale double-tap (already ARRIVED, or never ORDERED) doesn't churn the page.
+  const order = markArrived(getStore(), orderId);
+  if (order?.status === "ARRIVED") revalidatePath("/");
+}
+
+/** Parse a positive-integer release id from a form payload, or undefined if absent/garbage. */
+function releaseIdFrom(formData: FormData): number | undefined {
+  const raw = formData.get("release_id");
+  const id = Number(raw);
+  return raw && Number.isInteger(id) && id > 0 ? id : undefined;
+}
+
+/**
+ * Log an arrived record to Euan's Discogs collection (issue #10). A Discogs-sourced buy logs in
+ * one tap (the release id rode along on the order); an Amazon-sourced buy passes the release id
+ * Euan confirmed/corrected from the best-guess shortlist. Idempotent and ARRIVED-only — both
+ * enforced by `logArrivalToDiscogs`. A no-op if no Discogs credentials are configured.
+ */
+export async function logArrivalAction(formData: FormData): Promise<void> {
+  const orderId = orderIdFrom(formData);
+  if (orderId === null) return;
+  const discogs = discogsAdapterFromEnv();
+  if (!discogs) {
+    console.warn(
+      "[ui] arrival log ignored: set DISCOGS_USERNAME + DISCOGS_TOKEN to write back to Discogs.",
+    );
+    return;
+  }
+  await logArrivalToDiscogs(getStore(), { discogs }, orderId, releaseIdFrom(formData));
   revalidatePath("/");
 }
 
