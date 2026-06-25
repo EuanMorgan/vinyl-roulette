@@ -10,6 +10,7 @@ import {
   declineOrderAction,
   logArrivalAction,
   markArrivedAction,
+  runNowAction,
   setRatingAction,
 } from "./actions";
 
@@ -159,13 +160,25 @@ export default async function Home() {
       )}
 
       <section>
-        <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-neutral-400">
-          Runs
+        <h2 className="mb-3 flex items-baseline justify-between text-sm font-medium uppercase tracking-wide text-neutral-400">
+          <span>Runs</span>
+          {/* "Run now" fires the same agent entrypoint the Windows scheduler runs (issue #11),
+              just on demand. The Run is spawned detached — refresh to see its row. (Pausing, which
+              would also gate this, is the control surface in issue #12.) */}
+          <form action={runNowAction}>
+            <button
+              type="submit"
+              className="rounded-md border border-neutral-700 px-2.5 py-1 text-xs font-medium normal-case text-neutral-300 hover:bg-neutral-800"
+            >
+              Run now
+            </button>
+          </form>
         </h2>
         {runs.length === 0 ? (
           <p className="rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-6 text-sm text-neutral-400">
-            No runs yet. Trigger one with <code className="text-neutral-200">npm run agent:run</code>,
-            then refresh — this row is the end-to-end demo (agent writes, UI reads).
+            No runs yet. Tap <span className="text-neutral-200">Run now</span> or trigger one with{" "}
+            <code className="text-neutral-200">npm run agent:run</code>, then refresh — this row is
+            the end-to-end demo (agent writes, UI reads).
           </p>
         ) : (
           <ul className="space-y-2">
