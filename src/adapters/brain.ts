@@ -28,6 +28,8 @@ import type { BrainAdapter, BrainCandidate, BrainContext, OwnedAlbumContext } fr
 
 const LANES: readonly Lane[] = ["complete", "adjacent", "stretch"];
 const DEFAULT_CLAUDE_BIN = "claude";
+/** The Brain runs monthly and taste judgement is the whole point, so default to the most capable. */
+const DEFAULT_BRAIN_MODEL = "opus";
 /** OAuth tokens aren't refreshed mid-run and headless runs cap at ~10-15 min (ADR-0001); stay well under. */
 const DEFAULT_TIMEOUT_MS = 9 * 60 * 1000;
 
@@ -204,6 +206,8 @@ export interface ClaudeRunnerConfig {
   oauthToken?: string;
   /** The claude binary to run; override for a non-PATH install. */
   claudeBin?: string;
+  /** Model alias/full name (`opus`/`sonnet`/`claude-opus-4-8`/…). Omit to use the CLI default. */
+  model?: string;
   /** Hard ceiling on a single Run's Brain call; a hung subprocess is killed and rejects. */
   timeoutMs?: number;
 }
@@ -217,20 +221,16 @@ export interface BrainDeps {
 
 /**
  * The ADR-0001 headless invocation flags (pure, so a test can assert them): print mode, JSON
- * envelope, a single bounded turn, no tools — and crucially never `--bare`. The prompt itself is
- * fed on stdin (not here) so a multi-KB brief has no argv-length/escaping limit.
+ * envelope, a single bounded turn — and crucially never `--bare`. `--max-turns 1` keeps it a
+ * single completion (no agentic loop / tool use) without needing a tool-allowlist flag, whose
+ * empty-string form (`--tools ""`) this CLI rejects as a missing argument. The model alias
+ * (`opus`/`sonnet`/…) is passed when configured. The prompt itself is fed on stdin (not here) so
+ * a multi-KB brief has no argv-length/escaping limit.
  */
-export function claudeArgs(): string[] {
-  return [
-    "-p",
-    "--output-format",
-    "json",
-    "--max-turns",
-    "1",
-    // A pure judgement call — it must not read the repo or run commands.
-    "--tools",
-    "",
-  ];
+export function claudeArgs(model?: string): string[] {
+  const args = ["-p", "--output-format", "json", "--max-turns", "1"];
+  if (model) args.push("--model", model);
+  return args;
 }
 
 /** Build the real `claude -p` runner: spawn, pipe the prompt on stdin, return the result envelope. */
@@ -245,7 +245,7 @@ export function makeClaudeRunner(config: ClaudeRunnerConfig = {}, deps: BrainDep
       const env = { ...process.env };
       if (config.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = config.oauthToken;
 
-      const child = spawnImpl(bin, claudeArgs(), {
+      const child = spawnImpl(bin, claudeArgs(config.model), {
         env,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
@@ -289,7 +289,11 @@ export function brainAdapterFromEnv(
   const runner =
     deps.runClaude ??
     makeClaudeRunner(
-      { oauthToken: env.CLAUDE_CODE_OAUTH_TOKEN?.trim() || undefined, claudeBin: env.VINYL_CLAUDE_BIN?.trim() || undefined },
+      {
+        oauthToken: env.CLAUDE_CODE_OAUTH_TOKEN?.trim() || undefined,
+        claudeBin: env.VINYL_CLAUDE_BIN?.trim() || undefined,
+        model: env.VINYL_BRAIN_MODEL?.trim() || DEFAULT_BRAIN_MODEL,
+      },
       deps,
     );
   return new ClaudeBrainAdapter(runner);

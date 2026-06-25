@@ -297,5 +297,9 @@ export function discogsAdapterFromEnv(
   const username = env.DISCOGS_USERNAME?.trim();
   const token = env.DISCOGS_TOKEN?.trim();
   if (!username || !token) return null;
-  return new HttpDiscogsAdapter({ username, token, userAgent: env.DISCOGS_USER_AGENT }, deps);
+  // Coalesce an empty/whitespace override to undefined so the constructor falls back to the
+  // descriptive DEFAULT_USER_AGENT. A blank User-Agent makes Discogs 403 (see DEFAULT_USER_AGENT),
+  // and `.env.example` ships `DISCOGS_USER_AGENT=` empty — `"" ?? default` would keep the "".
+  const userAgent = env.DISCOGS_USER_AGENT?.trim() || undefined;
+  return new HttpDiscogsAdapter({ username, token, userAgent }, deps);
 }

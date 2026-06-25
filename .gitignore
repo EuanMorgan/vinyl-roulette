@@ -48,3 +48,6 @@ Thumbs.db
 
 # Windows crash dump artifacts
 *.stackdump
+
+# Buy-failure debug screenshots (may reveal album art — never commit)
+.buy-debug/

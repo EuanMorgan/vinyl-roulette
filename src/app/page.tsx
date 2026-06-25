@@ -15,6 +15,7 @@ import {
   setPausedAction,
   setRatingAction,
 } from "./actions";
+import { SubmitButton } from "./SubmitButton";
 
 // The spine changes outside the request lifecycle (the agent writes to it), so never
 // cache this page — always read the live file.
@@ -86,21 +87,21 @@ export default async function Home() {
                 <div className="mt-3 flex gap-2">
                   <form action={approveOrderAction}>
                     <input type="hidden" name="order_id" value={order.id} />
-                    <button
-                      type="submit"
-                      className="rounded-md border border-amber-700 bg-amber-900/40 px-3 py-1.5 text-sm font-medium text-amber-100 hover:bg-amber-900/70"
+                    <SubmitButton
+                      pendingLabel="Buying… clear any challenge in Chrome"
+                      className="rounded-md border border-amber-700 bg-amber-900/40 px-3 py-1.5 text-sm font-medium text-amber-100 hover:bg-amber-900/70 disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-amber-900/40"
                     >
                       Approve {formatGBP(order.quoted_price_pence)}
-                    </button>
+                    </SubmitButton>
                   </form>
                   <form action={declineOrderAction}>
                     <input type="hidden" name="order_id" value={order.id} />
-                    <button
-                      type="submit"
-                      className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                    <SubmitButton
+                      pendingLabel="Declining…"
+                      className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 disabled:cursor-wait disabled:opacity-60"
                     >
                       Decline
-                    </button>
+                    </SubmitButton>
                   </form>
                 </div>
               </li>

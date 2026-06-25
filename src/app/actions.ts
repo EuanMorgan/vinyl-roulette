@@ -75,7 +75,14 @@ export async function approveOrderAction(formData: FormData): Promise<void> {
     );
     return;
   }
-  await approveOrder(getStore(), deps, orderId, "manual");
+  const result = await approveOrder(getStore(), deps, orderId, "manual");
+  // Surface the outcome in the server log — a FAILED buy used to vanish silently, leaving only a
+  // FAILED row with no reason (the order table has no error column). This is the diagnostic trail.
+  if (result.outcome === "failed") {
+    console.warn(`[ui] approve order #${orderId} FAILED: ${result.error ?? "(no detail)"}`);
+  } else {
+    console.log(`[ui] approve order #${orderId}: ${result.outcome}`);
+  }
   revalidatePath("/");
 }
 

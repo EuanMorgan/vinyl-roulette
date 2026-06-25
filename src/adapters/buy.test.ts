@@ -10,6 +10,7 @@ import type { BuyQuote } from "./types";
 import {
   PlaywrightBuyAdapter,
   amazonCheckoutFlow,
+  assertNonDefaultProfile,
   discogsCheckoutFlow,
   type BuyBrowser,
   type BuyPage,
@@ -20,6 +21,7 @@ import {
 class FakeBuyPage implements BuyPage {
   readonly clicks: string[] = [];
   readonly waits: string[] = [];
+  readonly screenshots: string[] = [];
   closed = 0;
   private text = new Map<string, string>();
   /** Selectors that should throw when clicked/waited (e.g. "checkout markup changed"). */
@@ -45,6 +47,15 @@ class FakeBuyPage implements BuyPage {
   }
   async textContent(selector: string): Promise<string | null> {
     return this.text.get(selector) ?? null;
+  }
+  async waitForUrl(pattern: string | RegExp): Promise<void> {
+    const re = typeof pattern === "string" ? new RegExp(pattern) : pattern;
+    if (!re.test(this.currentUrl)) throw new Error(`url never matched ${pattern}`);
+    this.waits.push(`url:${pattern}`);
+  }
+  async screenshot(label: string): Promise<string | null> {
+    this.screenshots.push(label);
+    return `/fake/${label}.png`;
   }
   async close(): Promise<void> {
     this.closed += 1;
@@ -222,5 +233,61 @@ describe("checkout flows drive the documented selectors", () => {
 
     const out = await amazonCheckoutFlow.finalize(page);
     expect(out.finalPricePence).toBe(2400);
+  });
+
+  it("amazon: confirms via the thank-you URL even when the confirmation DOM never appears", async () => {
+    // The real-world failure: order placed (URL navigated to thank-you) but the A/B-tested
+    // confirmation widget selector didn't match — previously recorded as FAILED. Now it succeeds.
+    const page = new FakeBuyPage(
+      "https://www.amazon.co.uk/gp/buy/thankyou/handlers/display.html?ref=ppx",
+    );
+    page.failOn.add("#widget-purchaseConfirmationStatus, [data-testid='order-confirmation']");
+
+    const out = await amazonCheckoutFlow.finalize(page);
+    expect(out).toBeTruthy(); // confirmed via URL, did not throw
+    expect(page.screenshots).toHaveLength(0); // success path takes no debug screenshot
+  });
+
+  it("amazon: places the order even when the Place-Order click rejects on navigation", async () => {
+    // The real bug: clicking Place Order navigates to the thank-you page, which rejects the click
+    // promise ("execution context destroyed") AFTER the order is placed. The thank-you URL is the
+    // truth, so finalize must still succeed.
+    const page = new FakeBuyPage(
+      "https://www.amazon.co.uk/gp/buy/thankyou/handlers/display.html?purchaseId=220-1",
+    );
+    page.failOn.add("#turbo-checkout-pyo-button, input[name='placeYourOrder1'], #placeYourOrder");
+
+    const out = await amazonCheckoutFlow.finalize(page);
+    expect(out).toBeTruthy(); // confirmed via URL despite the click rejection
+    expect(page.screenshots).toHaveLength(0);
+  });
+
+  it("amazon: fails loudly with a screenshot when NEITHER the URL nor the DOM confirms", async () => {
+    const page = new FakeBuyPage("https://www.amazon.co.uk/checkout/still-here");
+    page.failOn.add("#widget-purchaseConfirmationStatus, [data-testid='order-confirmation']");
+
+    await expect(amazonCheckoutFlow.finalize(page)).rejects.toThrow(/confirmation not detected/i);
+    // Ground truth captured for diagnosis rather than another blind selector guess.
+    expect(page.screenshots).toContain("amazon-confirmation-miss");
+  });
+});
+
+describe("assertNonDefaultProfile rejects Chrome's default profile (the about:blank wedge)", () => {
+  it("throws for the default Windows profile dir (with or without a trailing slash)", () => {
+    const win = "C:\\Users\\euanm\\AppData\\Local\\Google\\Chrome\\User Data";
+    expect(() => assertNonDefaultProfile(win)).toThrow(/default profile/i);
+    expect(() => assertNonDefaultProfile(win + "\\")).toThrow(/default profile/i);
+  });
+
+  it("throws for the default Linux and macOS profile dirs", () => {
+    expect(() => assertNonDefaultProfile("/home/x/.config/google-chrome")).toThrow();
+    expect(() =>
+      assertNonDefaultProfile("/Users/x/Library/Application Support/Google/Chrome"),
+    ).toThrow();
+  });
+
+  it("accepts a dedicated, non-default profile dir", () => {
+    expect(() => assertNonDefaultProfile("C:\\Users\\euanm\\vinyl-autobuy-chrome")).not.toThrow();
+    expect(() => assertNonDefaultProfile("/home/x/vinyl-chrome")).not.toThrow();
   });
 });

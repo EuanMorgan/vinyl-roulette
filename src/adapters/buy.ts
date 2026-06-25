@@ -25,6 +25,9 @@
  * browser is injected (like `pricing.ts`'s `fetch`), so the orchestration is tested with a fake
  * page and never launches Chrome.
  */
+import { execFile } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import type { Source } from "@/store/types";
 import type { BuyAdapter, BuyQuote, BuyResult } from "./types";
 import { parseGbpToPence } from "./pricing";
@@ -41,6 +44,10 @@ export interface BuyPage {
   waitForVisible(selector: string, opts?: { timeoutMs?: number }): Promise<void>;
   /** Read an element's text (e.g. an order total / reference), or null if absent. */
   textContent(selector: string): Promise<string | null>;
+  /** Wait until the URL matches `pattern` (a regex source string or RegExp). Throws on timeout. */
+  waitForUrl(pattern: string | RegExp, opts?: { timeoutMs?: number }): Promise<void>;
+  /** Best-effort debug screenshot, returning the saved path (or null if it couldn't be taken). */
+  screenshot(label: string): Promise<string | null>;
   /** Close the page and its underlying browser context (releases the Chrome profile). */
   close(): Promise<void>;
 }
@@ -85,8 +92,14 @@ const AMAZON_SELECTORS = {
   buyNow: "#buy-now-button, input[name='submit.buy-now']",
   /** "Place your order" — present once buy-now's checkout pane has loaded. */
   placeOrder: "#turbo-checkout-pyo-button, input[name='placeYourOrder1'], #placeYourOrder",
-  /** Confirmation page markers, read after the order is placed. */
+  /** Confirmation-page DOM markers, read after the order is placed. */
   confirmation: "#widget-purchaseConfirmationStatus, [data-testid='order-confirmation']",
+  /**
+   * Amazon completes an order by navigating to a thank-you URL. This is the *reliable* success
+   * signal — the confirmation DOM above is heavily A/B-tested and a missed selector once recorded a
+   * truly-placed order as FAILED. `finalize` treats EITHER this URL OR the DOM marker as success.
+   */
+  confirmationUrlPattern: "thankyou|/buy/spc|order-?confirmation|/gp/buy/",
   orderReference: "#widget-purchaseConfirmationStatus [dir='ltr'], .order-number",
   orderTotal: "#od-subtotals .a-color-price, #order-total",
 } as const;
@@ -116,11 +129,39 @@ export const amazonCheckoutFlow: CheckoutFlow = {
     await page.waitForVisible(AMAZON_SELECTORS.placeOrder);
   },
   async finalize(page) {
-    await page.click(AMAZON_SELECTORS.placeOrder);
-    await page.waitForVisible(AMAZON_SELECTORS.confirmation);
+    // Clicking "Place your order" submits and navigates to the thank-you page. That navigation can
+    // reject the click promise ("Execution context was destroyed, most likely because of a
+    // navigation") even though the order WAS placed — which previously recorded a real, paid-for
+    // order as FAILED. So the click resolving cleanly is NOT the success signal; reaching a
+    // confirmed-order state is. Swallow the navigation-race rejection and let `confirmAmazonOrder`
+    // be the sole source of truth (it fails loudly, with a screenshot, if the order didn't land).
+    await page.click(AMAZON_SELECTORS.placeOrder).catch(() => {});
+    await confirmAmazonOrder(page);
     return readConfirmation(page, AMAZON_SELECTORS);
   },
 };
+
+/**
+ * Confirm an Amazon order actually went through, by EITHER signal: a navigation to a thank-you URL
+ * (regular checkout) OR the confirmation DOM marker (turbo Buy-Now, which updates in place without
+ * navigating). Whichever fires first wins. If neither does, capture a screenshot + the current URL
+ * and fail loudly — an unconfirmed order must never be recorded ORDERED, but the diagnostics turn a
+ * still-wrong selector into a one-line fix instead of another blind guess (#22).
+ */
+async function confirmAmazonOrder(page: BuyPage): Promise<void> {
+  try {
+    await Promise.any([
+      page.waitForUrl(AMAZON_SELECTORS.confirmationUrlPattern),
+      page.waitForVisible(AMAZON_SELECTORS.confirmation),
+    ]);
+  } catch {
+    const shot = await page.screenshot("amazon-confirmation-miss").catch(() => null);
+    throw new Error(
+      `order confirmation not detected after Place Order (url=${page.url()}` +
+        `${shot ? `, screenshot=${shot}` : ""})`,
+    );
+  }
+}
 
 /** Read the order reference + total off a confirmation page; both are best-effort (may be absent). */
 async function readConfirmation(
@@ -227,7 +268,10 @@ interface PwPage {
   goto(url: string, opts?: { timeout?: number; waitUntil?: string }): Promise<unknown>;
   click(selector: string, opts?: { timeout?: number }): Promise<void>;
   waitForSelector(selector: string, opts?: { state?: string; timeout?: number }): Promise<unknown>;
-  textContent(selector: string): Promise<string | null>;
+  waitForURL(url: string | RegExp, opts?: { timeout?: number }): Promise<void>;
+  textContent(selector: string, opts?: { timeout?: number }): Promise<string | null>;
+  screenshot(opts: { path?: string; fullPage?: boolean }): Promise<unknown>;
+  bringToFront?(): Promise<void>;
 }
 interface PwContext {
   pages(): PwPage[];
@@ -242,6 +286,19 @@ export interface PlaywrightBuyBrowserConfig {
   channel?: string;
   /** Per-step timeout in ms; generous so the human can clear a payment challenge. */
   stepTimeoutMs?: number;
+  /**
+   * Run headless. Defaults to *headed* (false): the buy needs the human to clear 2FA/PayPal/CVV,
+   * and watching it is reassuring for the first orders. Flip on later for a hands-off cadence.
+   */
+  headless?: boolean;
+  /**
+   * Before launching, force-quit any running Chrome so Playwright can take the profile lock
+   * (a running Chrome holds it, and the launch degrades to a blank window that never navigates).
+   * Default true on Windows — the local deploy target (ADR-0003). Injectable for tests.
+   */
+  forceCloseChrome?: boolean;
+  /** The profile-lock release step (kill Chrome + wait). Injected so tests never touch the OS. */
+  releaseProfileLock?: () => Promise<void>;
 }
 
 /**
@@ -254,6 +311,18 @@ export class PlaywrightBuyBrowser implements BuyBrowser {
   constructor(private readonly config: PlaywrightBuyBrowserConfig) {}
 
   async open(url: string): Promise<BuyPage> {
+    // Chrome (M136+) refuses DevTools remote debugging on the DEFAULT profile dir, so Playwright's
+    // CDP handshake never completes and the launch hangs on about:blank for the full timeout. Catch
+    // it here with an actionable message instead of a silent 3-minute stall (see ADR-0003 / #21).
+    assertNonDefaultProfile(this.config.userDataDir);
+
+    // A running Chrome holds the profile lock; Playwright then launches a blank window that never
+    // navigates (the about:blank wedge). Force-close it first so the buy can take the profile.
+    const forceClose = this.config.forceCloseChrome ?? process.platform === "win32";
+    if (forceClose) {
+      await (this.config.releaseProfileLock ?? killRunningChrome)();
+    }
+
     const { chromium } = (await import("playwright-core")) as {
       chromium: {
         launchPersistentContext(
@@ -264,11 +333,14 @@ export class PlaywrightBuyBrowser implements BuyBrowser {
     };
     const context = await chromium.launchPersistentContext(this.config.userDataDir, {
       channel: this.config.channel ?? "chrome",
-      headless: false, // the human is here to clear 2FA/PayPal/CVV
+      headless: this.config.headless ?? false, // headed by default: the human clears 2FA/PayPal/CVV
     });
     const stepTimeoutMs = this.config.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
     try {
-      const page = context.pages()[0] ?? (await context.newPage());
+      // Drive a dedicated fresh page (not a restored session tab, which may be about:blank), and
+      // surface it so the human sees the checkout they're clearing.
+      const page = await context.newPage();
+      await page.bringToFront?.();
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: stepTimeoutMs });
       return new PlaywrightBuyPage(context, page, stepTimeoutMs);
     } catch (err) {
@@ -276,6 +348,44 @@ export class PlaywrightBuyBrowser implements BuyBrowser {
       throw err;
     }
   }
+}
+
+/**
+ * Chrome refuses DevTools remote debugging when `--user-data-dir` is the *default* profile dir
+ * (a M136+ anti-CDP-attack measure), so Playwright hangs on about:blank until timeout. The buy
+ * must use a dedicated, non-default profile (`scripts/setup-chrome-profile.cjs`). Fail fast and
+ * loud here rather than letting `prepare` stall for the full step timeout.
+ */
+export function assertNonDefaultProfile(userDataDir: string): void {
+  // Match the OS-default Chrome user-data roots; the trailing "User Data" segment is the tell.
+  const normalized = userDataDir.replace(/[\\/]+$/, "").toLowerCase();
+  const isDefault =
+    /[\\/]google[\\/]chrome[\\/]user data$/.test(normalized) || // Windows
+    /[\\/]google[\\/]chrome$/.test(normalized) || // macOS (~/Library/Application Support/Google/Chrome)
+    /[\\/]google-chrome$/.test(normalized); // Linux (~/.config/google-chrome)
+  if (isDefault) {
+    throw new Error(
+      `CHROME_USER_DATA_DIR points at Chrome's DEFAULT profile (${userDataDir}). Chrome blocks ` +
+        `remote debugging there, so the buy would hang on about:blank. Use a dedicated profile: ` +
+        `run \`node scripts/setup-chrome-profile.cjs\` and set CHROME_USER_DATA_DIR to that dir.`,
+    );
+  }
+}
+
+/**
+ * Force-quit any running Chrome so Playwright can take the profile lock (Windows deploy target,
+ * ADR-0003). Best-effort: `taskkill` exits non-zero when no Chrome is running, which is fine — we
+ * just need the lock free. A short pause lets Windows release the profile's lock file before launch.
+ * Scoped to `chrome.exe`, so it never touches Arc (the daily driver) or other Chromium browsers.
+ */
+function killRunningChrome(): Promise<void> {
+  if (process.platform !== "win32") return Promise.resolve();
+  return new Promise((resolve) => {
+    execFile("taskkill", ["/F", "/IM", "chrome.exe", "/T"], () => {
+      // Ignore the result (non-zero = nothing to kill). Give the lock file a moment to release.
+      setTimeout(resolve, 1500).unref?.();
+    });
+  });
 }
 
 /** Wraps a playwright-core page/context behind the narrow `BuyPage` seam. */
@@ -299,7 +409,26 @@ class PlaywrightBuyPage implements BuyPage {
     });
   }
   async textContent(selector: string): Promise<string | null> {
-    return this.page.textContent(selector);
+    // Best-effort by contract (`BuyPage.textContent` → "or null if absent"). Playwright's
+    // page.textContent AUTO-WAITS and THROWS when the selector never appears — which once failed a
+    // fully-placed, confirmed order just because the optional order-reference markup didn't match.
+    // A short timeout + null-on-miss keeps these reads truly optional metadata, never a buy-killer.
+    return this.page.textContent(selector, { timeout: 2_000 }).catch(() => null);
+  }
+  async waitForUrl(pattern: string | RegExp, opts?: { timeoutMs?: number }): Promise<void> {
+    const re = typeof pattern === "string" ? new RegExp(pattern) : pattern;
+    await this.page.waitForURL(re, { timeout: opts?.timeoutMs ?? this.stepTimeoutMs });
+  }
+  async screenshot(label: string): Promise<string | null> {
+    try {
+      const dir = join(process.cwd(), ".buy-debug");
+      await mkdir(dir, { recursive: true });
+      const path = join(dir, `${label}-${Date.now()}.png`);
+      await this.page.screenshot({ path, fullPage: true });
+      return path;
+    } catch {
+      return null;
+    }
   }
   async close(): Promise<void> {
     await this.context.close();
@@ -317,6 +446,8 @@ export function buyAdapterFromEnv(env: NodeJS.ProcessEnv = process.env): Playwri
   const browser = new PlaywrightBuyBrowser({
     userDataDir,
     channel: env.CHROME_CHANNEL?.trim() || undefined,
+    // Watch the buy by default; set CHROME_HEADLESS=1 once you trust the cadence.
+    headless: env.CHROME_HEADLESS?.trim() === "1",
   });
   return new PlaywrightBuyAdapter(browser);
 }
